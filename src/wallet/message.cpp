@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2022 libbitcoin developers (see AUTHORS)
+ * Copyright (c) 2011-2019 libbitcoin developers (see AUTHORS)
  *
  * This file is part of libbitcoin.
  *
@@ -18,9 +18,12 @@
  */
 #include <bitcoin/system/wallet/message.hpp>
 
+#include <bitcoin/system/constants.hpp>
 #include <bitcoin/system/define.hpp>
-#include <bitcoin/system/stream/stream.hpp>
-#include <bitcoin/system/wallet/keys/ec_private.hpp>
+#include <bitcoin/system/math/limits.hpp>
+#include <bitcoin/system/utility/container_sink.hpp>
+#include <bitcoin/system/utility/ostream_writer.hpp>
+#include <bitcoin/system/wallet/ec_private.hpp>
 
 namespace libbitcoin {
 namespace system {
@@ -30,26 +33,27 @@ static constexpr uint8_t max_recovery_id = 3;
 static constexpr uint8_t magic_compressed = 31;
 static constexpr uint8_t magic_uncompressed = 27;
 static constexpr uint8_t magic_differential = magic_compressed - magic_uncompressed;
-static_assert(magic_differential > max_recovery_id);
-static_assert(max_uint8 - max_recovery_id >= magic_uncompressed);
+static_assert(magic_differential > max_recovery_id, "oops!");
+static_assert(max_uint8 - max_recovery_id >= magic_uncompressed, "oops!");
 
-hash_digest hash_message(const data_slice& message) NOEXCEPT
+hash_digest hash_message(const data_slice& message)
 {
     // This is a specified magic prefix.
     static const std::string prefix("Bitcoin Signed Message:\n");
 
-    hash_digest sha256{};
-    hash::sha256::copy sink(sha256);
+    data_chunk data;
+    data_sink ostream(data);
+    ostream_writer sink(ostream);
     sink.write_string(prefix);
-    sink.write_variable(message.size());
-    sink.write_bytes(message);
-    sink.flush();
-    return sha256_hash(sha256);
+    sink.write_variable_little_endian(message.size());
+    sink.write_bytes(message.begin(), message.size());
+    ostream.flush();
+    return bitcoin_hash(data);
 }
 
 static bool recover(short_hash& out_hash, bool compressed,
     const ec_signature& compact, uint8_t recovery_id,
-    const hash_digest& message_digest) NOEXCEPT
+    const hash_digest& message_digest)
 {
     const recoverable_signature recoverable
     {
@@ -76,7 +80,7 @@ static bool recover(short_hash& out_hash, bool compressed,
 }
 
 bool recovery_id_to_magic(uint8_t& out_magic, uint8_t recovery_id,
-    bool compressed) NOEXCEPT
+    bool compressed)
 {
     if (recovery_id > max_recovery_id)
         return false;
@@ -88,7 +92,7 @@ bool recovery_id_to_magic(uint8_t& out_magic, uint8_t recovery_id,
 }
 
 bool magic_to_recovery_id(uint8_t& out_recovery_id, bool& out_compressed,
-    uint8_t magic) NOEXCEPT
+    uint8_t magic)
 {
     // Magic less offsets cannot exceed recovery id range [0, max_recovery_id].
     if (magic < magic_uncompressed ||
@@ -96,26 +100,27 @@ bool magic_to_recovery_id(uint8_t& out_recovery_id, bool& out_compressed,
         return false;
 
     // Subtract smaller sentinel (guarded above).
-    out_recovery_id = magic - magic_uncompressed;
+    auto recovery_id = magic - magic_uncompressed;
 
     // Obtain compression state (differential exceeds the recovery id range).
-    out_compressed = out_recovery_id >= magic_differential;
+    out_compressed = recovery_id >= magic_differential;
 
     // If compression is indicated subtract differential (guarded above).
     if (out_compressed)
-        out_recovery_id -= magic_differential;
+        recovery_id -= magic_differential;
 
+    out_recovery_id = safe_to_unsigned<uint8_t>(recovery_id);
     return true;
 }
 
 bool sign_message(message_signature& out_signature, const data_slice& message,
-    const ec_private& secret) NOEXCEPT
+    const ec_private& secret)
 {
     return sign_message(out_signature, message, secret, secret.compressed());
 }
 
 bool sign_message(message_signature& out_signature, const data_slice& message,
-    const std::string& wif) NOEXCEPT
+    const std::string& wif)
 {
     ec_private secret(wif);
     return (secret &&
@@ -123,7 +128,7 @@ bool sign_message(message_signature& out_signature, const data_slice& message,
 }
 
 bool sign_message(message_signature& out_signature, const data_slice& message,
-    const ec_secret& secret, bool compressed) NOEXCEPT
+    const ec_secret& secret, bool compressed)
 {
     recoverable_signature recoverable;
     if (!sign_recoverable(recoverable, secret, hash_message(message)))
@@ -138,10 +143,10 @@ bool sign_message(message_signature& out_signature, const data_slice& message,
 }
 
 bool verify_message(const data_slice& message, const payment_address& address,
-    const message_signature& signature) NOEXCEPT
+    const message_signature& signature)
 {
     const auto magic = signature.front();
-    const auto compact = slice<one, message_signature_size>(signature);
+    const auto compact = slice<1, message_signature_size>(signature);
 
     bool compressed;
     uint8_t recovery_id;

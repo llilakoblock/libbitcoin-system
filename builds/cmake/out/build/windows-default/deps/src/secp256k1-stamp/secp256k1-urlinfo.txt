@@ -1,0 +1,3 @@
+repository='external project URL'
+module='https://github.com/llilakoblock/secp256k1/archive/refs/heads/master.zip'
+tag=''

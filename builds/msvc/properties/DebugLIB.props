@@ -12,7 +12,9 @@
   
   <ItemDefinitionGroup>
     <ClCompile>
+      <DebugInformationFormat>OldStyle</DebugInformationFormat>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <LinkIncremental>true</LinkIncremental>
     </ClCompile>
   </ItemDefinitionGroup>
 

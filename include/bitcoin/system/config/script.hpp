@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2022 libbitcoin developers (see AUTHORS)
+ * Copyright (c) 2011-2019 libbitcoin developers (see AUTHORS)
  *
  * This file is part of libbitcoin.
  *
@@ -22,36 +22,99 @@
 #include <iostream>
 #include <string>
 #include <vector>
-#include <bitcoin/system/chain/chain.hpp>
-#include <bitcoin/system/data/data.hpp>
+#include <bitcoin/system/chain/script.hpp>
 #include <bitcoin/system/define.hpp>
+#include <bitcoin/system/utility/data.hpp>
 
 namespace libbitcoin {
 namespace system {
 namespace config {
 
-/// Serialization helper for chain::script.
-class BC_API script final
-  : public chain::script
+/**
+ * Serialization helper to convert between base16/raw script and script_type.
+ */
+class BC_API script
 {
 public:
-    script() NOEXCEPT;
-    script(chain::script&& value) NOEXCEPT;
-    script(const chain::script& value) NOEXCEPT;
 
-    /// Split or unsplit tokens.
-    script(const std::string& mnemonic) THROWS;
-    script(const std::vector<std::string>& tokens) THROWS;
+    /**
+     * Default constructor.
+     */
+    script();
 
-    /// Default text encoding is mnemonic, so provide data for base16.
-    script(const data_chunk& value) NOEXCEPT;
+    /**
+     * Initialization constructor.
+     * @param[in]  mnemonic  The value to initialize with.
+     */
+    script(const std::string& mnemonic);
 
-    ////std::string to_string() const NOEXCEPT;
+    /**
+     * Initialization constructor.
+     * @param[in]  value  The value to initialize with.
+     */
+    script(const chain::script& value);
 
-    friend std::istream& operator>>(std::istream& stream,
-        script& argument) THROWS;
-    friend std::ostream& operator<<(std::ostream& stream,
-        const script& argument) NOEXCEPT;
+    /**
+     * Initialization constructor.
+     * @param[in]  value  The value to initialize with.
+     */
+    script(const data_chunk& value);
+
+    /**
+     * Initialization constructor.
+     * @param[in]  tokens  The mnemonic tokens to initialize with.
+     */
+    script(const std::vector<std::string>& tokens);
+
+    /**
+     * Copy constructor.
+     * @param[in]  other  The object to copy into self on construct.
+     */
+    script(const script& other);
+
+    /**
+     * Serialize the script to bytes according to the wire protocol.
+     * @return  The byte serialized copy of the script.
+     */
+    data_chunk to_data() const;
+
+    /**
+     * Return a pretty-printed copy of the script.
+     * @param[in]  flags  The rule fork flags to use.
+     * @return            A mnemonic-printed copy of the internal script.
+     */
+    std::string to_string(uint32_t flags=machine::rule_fork::all_rules) const;
+
+    /**
+     * Overload cast to internal type.
+     * @return  This object's value cast to internal type.
+     */
+    operator const chain::script&() const;
+
+    /**
+     * Overload stream in. Throws if input is invalid.
+     * @param[in]   input     The input stream to read the value from.
+     * @param[out]  argument  The object to receive the read value.
+     * @return                The input stream reference.
+     */
+    friend std::istream& operator>>(std::istream& input,
+        script& argument);
+
+    /**
+     * Overload stream out.
+     * @param[in]   output    The output stream to write the value to.
+     * @param[out]  argument  The object from which to obtain the value.
+     * @return                The output stream reference.
+     */
+    friend std::ostream& operator<<(std::ostream& output,
+        const script& argument);
+
+private:
+
+    /**
+     * The state of this object.
+     */
+    chain::script value_;
 };
 
 } // namespace config

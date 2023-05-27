@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2022 libbitcoin developers (see AUTHORS)
+ * Copyright (c) 2011-2019 libbitcoin developers (see AUTHORS)
  *
  * This file is part of libbitcoin.
  *
@@ -18,65 +18,88 @@
  */
 #include <bitcoin/system/config/script.hpp>
 
-#include <iostream>
 #include <sstream>
 #include <string>
-#include <utility>
 #include <vector>
+#include <boost/algorithm/string.hpp>
+#include <boost/program_options.hpp>
 #include <bitcoin/system/chain/script.hpp>
-#include <bitcoin/system/data/data.hpp>
+#include <bitcoin/system/utility/data.hpp>
+#include <bitcoin/system/utility/string.hpp>
 
 namespace libbitcoin {
 namespace system {
 namespace config {
 
-script::script() NOEXCEPT
-  : chain::script()
-{
-}
+using namespace boost;
+using namespace boost::program_options;
 
-script::script(chain::script&& value) NOEXCEPT
-  : chain::script(std::move(value))
-{
-}
-
-script::script(const chain::script& value) NOEXCEPT
-  : chain::script(value)
-{
-}
-
-script::script(const data_chunk& value) NOEXCEPT
-  : chain::script(value, false)
-{
-}
-
-script::script(const std::vector<std::string>& tokens) THROWS
-  : script(join(tokens))
+script::script()
+  : value_()
 {
 }
 
 script::script(const std::string& mnemonic)
 {
-    std::istringstream(mnemonic) >> *this;
+    std::stringstream(mnemonic) >> *this;
 }
 
-std::istream& operator>>(std::istream& stream, script& argument) THROWS
+script::script(const chain::script& value)
+  : value_(value)
+{
+}
+
+script::script(const data_chunk& value)
+{
+    value_.from_data(value, false);
+}
+
+script::script(const std::vector<std::string>& tokens)
+{
+    const auto mnemonic = join(tokens);
+    std::stringstream(mnemonic) >> *this;
+}
+
+script::script(const script& other)
+  : script(other.value_)
+{
+}
+
+data_chunk script::to_data() const
+{
+    return value_.to_data(false);
+}
+
+std::string script::to_string(uint32_t flags) const
+{
+    return value_.to_string(flags);
+}
+
+script::operator const chain::script&() const
+{
+    return value_;
+}
+
+std::istream& operator>>(std::istream& input, script& argument)
 {
     std::istreambuf_iterator<char> end;
-    std::string mnemonic(std::istreambuf_iterator<char>(stream), end);
+    std::string mnemonic(std::istreambuf_iterator<char>(input), end);
+    boost::trim(mnemonic);
 
-    argument = chain::script{ mnemonic };
+    // Test for invalid result sentinel.
+    if (!argument.value_.from_string(mnemonic) && mnemonic.length() > 0)
+    {
+        BOOST_THROW_EXCEPTION(invalid_option_value(mnemonic));
+    }
 
-    if (!argument.is_valid())
-        throw istream_exception(mnemonic);
-
-    return stream;
+    return input;
 }
 
-std::ostream& operator<<(std::ostream& stream, const script& argument) NOEXCEPT
+std::ostream& operator<<(std::ostream& output, const script& argument)
 {
-    stream << argument.to_string(chain::forks::all_rules);
-    return stream;
+    static constexpr auto flags = machine::rule_fork::all_rules;
+    output << argument.value_.to_string(flags);
+    return output;
 }
 
 } // namespace config

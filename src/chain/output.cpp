@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2022 libbitcoin developers (see AUTHORS)
+ * Copyright (c) 2011-2019 libbitcoin developers (see AUTHORS)
  *
  * This file is part of libbitcoin.
  *
@@ -19,252 +19,340 @@
 #include <bitcoin/system/chain/output.hpp>
 
 #include <algorithm>
-#include <iterator>
-#include <memory>
-#include <bitcoin/system/chain/enums/magic_numbers.hpp>
-#include <bitcoin/system/define.hpp>
-#include <bitcoin/system/math/math.hpp>
-#include <bitcoin/system/stream/stream.hpp>
+#include <cstddef>
+#include <cstdint>
+#include <bitcoin/system/constants.hpp>
+#include <bitcoin/system/utility/container_sink.hpp>
+#include <bitcoin/system/utility/container_source.hpp>
+#include <bitcoin/system/utility/istream_reader.hpp>
+#include <bitcoin/system/utility/ostream_writer.hpp>
+#include <bitcoin/system/wallet/payment_address.hpp>
 
 namespace libbitcoin {
 namespace system {
 namespace chain {
 
+using namespace bc::system::wallet;
+
 // This is a consensus critical value that must be set on reset.
 const uint64_t output::not_found = sighash_null_value;
 
+// These are non-consensus sentinel values used by the store.
+const uint32_t output::validation::not_spent = max_uint32;
+const uint8_t output::validation::candidate_spent_true = 1;
+const uint8_t output::validation::candidate_spent_false = 0;
+
 // Constructors.
-// ----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 
-// Invalid default used in signature hashing (validity ignored).
-// Invalidity is also used to determine that a prevout is not found.
-output::output() NOEXCEPT
-  : output(output::not_found, to_shared<chain::script>(), false)
+output::output()
+  : metadata{},
+    value_(not_found),
+    script_{}
 {
 }
 
-output::output(uint64_t value, chain::script&& script) NOEXCEPT
-  : output(value, to_shared(std::move(script)), true)
+output::output(output&& other)
+  : metadata(other.metadata),
+    addresses_(other.addresses_cache()),
+    value_(other.value_),
+    script_(std::move(other.script_))
 {
 }
 
-output::output(uint64_t value, const chain::script& script) NOEXCEPT
-  : output(value, to_shared(script), true)
+output::output(const output& other)
+  : metadata(other.metadata),
+    addresses_(other.addresses_cache()),
+    value_(other.value_),
+    script_(other.script_)
 {
 }
 
-output::output(uint64_t value, const chain::script::cptr& script) NOEXCEPT
-  : output(value, script ? script : to_shared<chain::script>(), true)
+output::output(uint64_t value, chain::script&& script)
+  : metadata{},
+    value_(value),
+    script_(std::move(script))
 {
 }
 
-output::output(const data_slice& data) NOEXCEPT
-    BC_PUSH_WARNING(NO_THROW_IN_NOEXCEPT)
-  : output(stream::in::copy(data))
-    BC_POP_WARNING()
+output::output(uint64_t value, const chain::script& script)
+  : metadata{},
+    value_(value),
+    script_(script)
 {
 }
 
-output::output(std::istream&& stream) NOEXCEPT
-  : output(read::bytes::istream(stream))
+// Private cache access for copy/move construction.
+output::addresses_ptr output::addresses_cache() const
 {
-}
-
-output::output(std::istream& stream) NOEXCEPT
-  : output(read::bytes::istream(stream))
-{
-}
-
-output::output(reader&& source) NOEXCEPT
-  : output(from_data(source))
-{
-}
-
-output::output(reader& source) NOEXCEPT
-  : output(from_data(source))
-{
-}
-
-// protected
-output::output(uint64_t value, const chain::script::cptr& script,
-    bool valid) NOEXCEPT
-  : value_(value), script_(script), valid_(valid)
-{
+    shared_lock lock(mutex_);
+    return addresses_;
 }
 
 // Operators.
-// ----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 
-bool output::operator==(const output& other) const NOEXCEPT
+output& output::operator=(output&& other)
 {
-    return (value_ == other.value_)
-        && (script_ == other.script_ || *script_ == *other.script_);
+    addresses_ = other.addresses_cache();
+    value_ = other.value_;
+    script_ = std::move(other.script_);
+    metadata = std::move(other.metadata);
+    return *this;
 }
 
-bool output::operator!=(const output& other) const NOEXCEPT
+output& output::operator=(const output& other)
+{
+    addresses_ = other.addresses_cache();
+    value_ = other.value_;
+    script_ = other.script_;
+    metadata = other.metadata;
+    return *this;
+}
+
+bool output::operator==(const output& other) const
+{
+    return (value_ == other.value_) && (script_ == other.script_);
+}
+
+bool output::operator!=(const output& other) const
 {
     return !(*this == other);
 }
 
 // Deserialization.
-// ----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 
-// static/private
-output output::from_data(reader& source) NOEXCEPT
+output output::factory(const data_chunk& data, bool wire)
 {
-    return
+    output instance;
+    instance.from_data(data, wire);
+    return instance;
+}
+
+output output::factory(std::istream& stream, bool wire)
+{
+    output instance;
+    instance.from_data(stream, wire);
+    return instance;
+}
+
+output output::factory(reader& source, bool wire)
+{
+    output instance;
+    instance.from_data(source, wire);
+    return instance;
+}
+
+bool output::from_data(const data_chunk& data, bool wire)
+{
+    data_source istream(data);
+    return from_data(istream, wire);
+}
+
+bool output::from_data(std::istream& stream, bool wire)
+{
+    istream_reader source(stream);
+    return from_data(source, wire);
+}
+
+bool output::from_data(reader& source, bool wire, bool)
+{
+    reset();
+
+    if (!wire)
     {
-        source.read_8_bytes_little_endian(),
-        to_shared<chain::script>(source, true),
-        source
-    };
+        const auto spent = source.read_byte() == 
+            output::validation::candidate_spent_true;
+
+        // These read updateable data in a non-atomic manner.
+        // The results are unusable unless externally protected.
+        metadata.candidate_spent = spent;
+        metadata.confirmed_spent_height = source.read_4_bytes_little_endian();
+    }
+
+    value_ = source.read_8_bytes_little_endian();
+    script_.from_data(source, true);
+
+    if (!source)
+        reset();
+
+    return source;
+}
+
+// protected
+void output::reset()
+{
+    value_ = output::not_found;
+    script_.reset();
+}
+
+// Empty scripts are valid, validation relies on not_found only.
+bool output::is_valid() const
+{
+    return value_ != output::not_found;
 }
 
 // Serialization.
-// ----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 
-data_chunk output::to_data() const NOEXCEPT
+data_chunk output::to_data(bool wire) const
 {
-    data_chunk data(serialized_size());
-
-    BC_PUSH_WARNING(NO_THROW_IN_NOEXCEPT)
-    stream::out::copy ostream(data);
-    BC_POP_WARNING()
-
-    to_data(ostream);
+    data_chunk data;
+    const auto size = serialized_size(wire);
+    data.reserve(size);
+    data_sink ostream(data);
+    to_data(ostream, wire);
+    ostream.flush();
+    BITCOIN_ASSERT(data.size() == size);
     return data;
 }
 
-void output::to_data(std::ostream& stream) const NOEXCEPT
+void output::to_data(std::ostream& stream, bool wire) const
 {
-    write::bytes::ostream out(stream);
-    to_data(out);
+    ostream_writer sink(stream);
+    to_data(sink, wire);
 }
 
-void output::to_data(writer& sink) const NOEXCEPT
+void output::to_data(writer& sink, bool wire, bool) const
 {
+    if (!wire)
+    {
+        const auto spent = metadata.candidate_spent ?
+            output::validation::candidate_spent_true :
+            output::validation::candidate_spent_false;
+
+        // These writes are only utilized for unreachable tx serialization.
+        // Later updates and usable reads must be externally protected.
+        sink.write_byte(spent);
+        sink.write_4_bytes_little_endian(metadata.confirmed_spent_height);
+    }
+
     sink.write_8_bytes_little_endian(value_);
-    script_->to_data(sink, true);
+    script_.to_data(sink, true);
 }
 
-size_t output::serialized_size() const NOEXCEPT
+// Size.
+//-----------------------------------------------------------------------------
+
+size_t output::serialized_size(bool wire) const
 {
-    return sizeof(value_) + script_->serialized_size(true);
+    const auto metadata = wire ? 0 : sizeof(uint32_t) + sizeof(uint8_t);
+    return metadata + sizeof(value_) + script_.serialized_size(true);
 }
 
-// Properties.
-// ----------------------------------------------------------------------------
+// Accessors.
+//-----------------------------------------------------------------------------
 
-bool output::is_valid() const NOEXCEPT
-{
-    return valid_;
-}
-
-uint64_t output::value() const NOEXCEPT
+uint64_t output::value() const
 {
     return value_;
 }
 
-const chain::script& output::script() const NOEXCEPT
+void output::set_value(uint64_t value)
 {
-    return *script_;
+    value_ = value;
 }
 
-const chain::script::cptr& output::script_ptr() const NOEXCEPT
+const chain::script& output::script() const
 {
     return script_;
 }
 
-// Methods.
-// ----------------------------------------------------------------------------
-
-bool output::committed_hash(hash_digest& out) const NOEXCEPT
+void output::set_script(const chain::script& value)
 {
-    const auto& ops = script_->ops();
+    script_ = value;
+    invalidate_cache();
+}
+
+void output::set_script(chain::script&& value)
+{
+    script_ = std::move(value);
+    invalidate_cache();
+}
+
+// protected
+void output::invalidate_cache() const
+{
+    ///////////////////////////////////////////////////////////////////////////
+    // Critical Section
+    mutex_.lock_upgrade();
+
+    if (addresses_)
+    {
+        mutex_.unlock_upgrade_and_lock();
+        //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        addresses_.reset();
+        //---------------------------------------------------------------------
+        mutex_.unlock_and_lock_upgrade();
+    }
+
+    mutex_.unlock_upgrade();
+    ///////////////////////////////////////////////////////////////////////////
+}
+
+payment_address output::address(uint8_t p2kh_version,
+    uint8_t p2sh_version) const
+{
+    const auto value = addresses(p2kh_version, p2sh_version);
+    return value.empty() ? payment_address{} : value.front();
+}
+
+payment_address::list output::addresses(uint8_t p2kh_version,
+    uint8_t p2sh_version) const
+{
+    ///////////////////////////////////////////////////////////////////////////
+    // Critical Section
+    mutex_.lock_upgrade();
+
+    if (!addresses_)
+    {
+        //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        mutex_.unlock_upgrade_and_lock();
+        addresses_ = std::make_shared<payment_address::list>(
+            payment_address::extract_output(script_, p2kh_version,
+                p2sh_version));
+        mutex_.unlock_and_lock_upgrade();
+        //---------------------------------------------------------------------
+    }
+
+    const auto addresses = *addresses_;
+    mutex_.unlock_upgrade();
+    ///////////////////////////////////////////////////////////////////////////
+
+    return addresses;
+}
+
+// Validation helpers.
+//-----------------------------------------------------------------------------
+
+size_t output::signature_operations(bool bip141) const
+{
+    // Penalize quadratic signature operations (bip141).
+    const auto sigops_factor = bip141 ? fast_sigops_factor : 1u;
+
+    // Count heavy sigops in the output script.
+    return script_.sigops(false) * sigops_factor;
+}
+
+bool output::is_dust(uint64_t minimum_value) const
+{
+    // If provably unspendable it does not expand the unspent output set.
+    return value_ < minimum_value && !script_.is_unspendable();
+}
+
+bool output::extract_committed_hash(hash_digest& out) const
+{
+    const auto& ops = script_.operations();
+
     if (!script::is_commitment_pattern(ops))
         return false;
 
     // The four byte offset for the witness commitment hash (bip141).
-
-    // More efficient [] dereference is guarded above.
-    BC_PUSH_WARNING(NO_ARRAY_INDEXING)
-    const auto start = std::next(ops[1].data().begin(), sizeof(witness_head));
-    BC_POP_WARNING()
-
+    const auto start = ops[1].data().begin() + sizeof(witness_head);
     std::copy_n(start, hash_size, out.begin());
     return true;
 }
-
-// Product overflows guarded by script size limit.
-static_assert(max_script_size < max_size_t / multisig_default_sigops / 
-    heavy_sigops_factor, "output sigop overflow guard");
-
-size_t output::signature_operations(bool bip141) const NOEXCEPT
-{
-    // Penalize quadratic signature operations (bip141).
-    const auto factor = bip141 ? heavy_sigops_factor : one;
-
-    // Count heavy sigops in the output script.
-    return script_->signature_operations(false) * factor;
-}
-
-bool output::is_dust(uint64_t minimum_value) const NOEXCEPT
-{
-    // If provably unspendable it does not expand the unspent output set. Dust
-    // is all about prunability. Miners can be expected take the largest fee
-    // independent of dust, so this is an attempt to prevent miners from seeing
-    // transactions with unprunable outputs.
-    return value_ < minimum_value && !script_->is_unspendable();
-}
-
-// JSON value convertors.
-// ----------------------------------------------------------------------------
-
-namespace json = boost::json;
-
-// boost/json will soon have NOEXCEPT: github.com/boostorg/json/pull/636
-BC_PUSH_WARNING(NO_THROW_IN_NOEXCEPT)
-
-output tag_invoke(json::value_to_tag<output>,
-    const json::value& value) NOEXCEPT
-{
-    return
-    {
-        value.at("value").to_number<uint64_t>(),
-        json::value_to<chain::script>(value.at("script"))
-    };
-}
-
-void tag_invoke(json::value_from_tag, json::value& value,
-    const output& output) NOEXCEPT
-{
-    value =
-    {
-        { "value", output.value() },
-        { "script", output.script() },
-    };
-}
-
-BC_POP_WARNING()
-
-output::cptr tag_invoke(json::value_to_tag<output::cptr>,
-    const json::value& value) NOEXCEPT
-{
-    return to_shared(tag_invoke(json::value_to_tag<output>{}, value));
-}
-
-// Shared pointer overload is required for navigation.
-BC_PUSH_WARNING(SMART_PTR_NOT_NEEDED)
-BC_PUSH_WARNING(NO_VALUE_OR_CONST_REF_SHARED_PTR)
-
-void tag_invoke(json::value_from_tag tag, json::value& value,
-    const output::cptr& output) NOEXCEPT
-{
-    tag_invoke(tag, value, *output);
-}
-
-BC_POP_WARNING()
-BC_POP_WARNING()
 
 } // namespace chain
 } // namespace system

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2022 libbitcoin developers (see AUTHORS)
+ * Copyright (c) 2011-2019 libbitcoin developers (see AUTHORS)
  *
  * This file is part of libbitcoin.
  *
@@ -16,18 +16,23 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-#include "../test.hpp"
+#include <boost/test/unit_test.hpp>
+#include <boost/program_options.hpp>
+#include <bitcoin/system.hpp>
+
+using namespace bc::system;
+using namespace bc::system::config;
 
 BOOST_AUTO_TEST_SUITE(hash256_tests)
-
-using namespace bc::system::config;
 
 BOOST_AUTO_TEST_SUITE(hash256__construct)
 
 BOOST_AUTO_TEST_CASE(hash256__construct__default__null_hash)
 {
     const hash256 uninitialized_hash;
-    BOOST_REQUIRE_EQUAL((const hash_digest&)uninitialized_hash, null_hash);
+    const auto expectation = encode_hash(null_hash);
+    const auto result = encode_hash(uninitialized_hash);
+    BOOST_REQUIRE_EQUAL(expectation, result);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

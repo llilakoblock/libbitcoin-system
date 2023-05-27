@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2022 libbitcoin developers (see AUTHORS)
+ * Copyright (c) 2011-2019 libbitcoin developers (see AUTHORS)
  *
  * This file is part of libbitcoin.
  *
@@ -16,34 +16,78 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-#ifndef LIBBITCOIN_SYSTEM_CONFIG_HEADER_HPP
-#define LIBBITCOIN_SYSTEM_CONFIG_HEADER_HPP
+#ifndef LIBBITCOIN_SYSTEM_HEADER_HPP
+#define LIBBITCOIN_SYSTEM_HEADER_HPP
 
 #include <iostream>
 #include <string>
-#include <bitcoin/system/chain/chain.hpp>
 #include <bitcoin/system/define.hpp>
+#include <bitcoin/system/chain/header.hpp>
 
 namespace libbitcoin {
 namespace system {
 namespace config {
 
-/// Serialization helper for chain::header.
-class BC_API header final
-  : public chain::header
+/**
+ * Serialization helper to convert between serialized and deserialized satoshi
+ * header.
+ */
+class BC_API header
 {
 public:
-    header() NOEXCEPT;
-    header(chain::header&& value) NOEXCEPT;
-    header(const chain::header& value) NOEXCEPT;
-    header(const std::string& base16) THROWS;
 
-    ////std::string to_string() const NOEXCEPT;
+    /**
+     * Default constructor.
+     */
+    header();
 
-    friend std::istream& operator>>(std::istream& stream,
-        header& argument) THROWS;
-    friend std::ostream& operator<<(std::ostream& stream,
-        const header& argument) NOEXCEPT;
+    /**
+     * Initialization constructor.
+     * @param[in]  hexcode  The value to initialize with.
+     */
+    header(const std::string& hexcode);
+
+    /**
+     * Initialization constructor.
+     * @param[in]  value  The value to initialize with.
+     */
+    header(const chain::header& value);
+
+    /**
+     * Copy constructor.
+     * @param[in]  other  The object to copy into self on construct.
+     */
+    header(const header& other);
+
+    /**
+     * Overload cast to internal type.
+     * @return  This object's value cast to internal type.
+     */
+    operator const chain::header&() const;
+
+    /**
+     * Overload stream in. Throws if input is invalid.
+     * @param[in]   input     The input stream to read the value from.
+     * @param[out]  argument  The object to receive the read value.
+     * @return                The input stream reference.
+     */
+    friend std::istream& operator>>(std::istream& input, header& argument);
+
+    /**
+     * Overload stream out.
+     * @param[in]   output    The output stream to write the value to.
+     * @param[out]  argument  The object from which to obtain the value.
+     * @return                The output stream reference.
+     */
+    friend std::ostream& operator<<(std::ostream& output,
+        const header& argument);
+
+private:
+
+    /**
+     * The state of this object's header data.
+     */
+    chain::header value_;
 };
 
 } // namespace config

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2022 libbitcoin developers (see AUTHORS)
+ * Copyright (c) 2011-2019 libbitcoin developers (see AUTHORS)
  *
  * This file is part of libbitcoin.
  *
@@ -18,64 +18,67 @@
  */
 #include <bitcoin/system/config/hash256.hpp>
 
-#include <iostream>
 #include <sstream>
 #include <string>
-#include <utility>
-#include <bitcoin/system/hash/hash.hpp>
-#include <bitcoin/system/radix/radix.hpp>
+#include <boost/program_options.hpp>
+#include <bitcoin/system/formats/base_16.hpp>
+#include <bitcoin/system/math/hash.hpp>
 
 namespace libbitcoin {
 namespace system {
 namespace config {
 
-hash256::hash256() NOEXCEPT
+hash256::hash256()
   : value_(null_hash)
 {
 }
 
-hash256::hash256(hash_digest&& value) NOEXCEPT
-  : value_(std::move(value))
+hash256::hash256(const std::string& hexcode)
+  : hash256()
 {
+    std::stringstream(hexcode) >> *this;
 }
 
-hash256::hash256(const hash_digest& value) NOEXCEPT
+hash256::hash256(const hash_digest& value)
   : value_(value)
 {
 }
 
-hash256::hash256(const std::string& base16) THROWS
+hash256::hash256(const hash256& other)
+  : hash256(other.value_)
 {
-    std::istringstream(base16) >> *this;
 }
 
-std::string hash256::to_string() const NOEXCEPT
+std::string hash256::to_string() const
 {
-    std::ostringstream value;
+    std::stringstream value;
     value << *this;
     return value.str();
 }
 
-hash256::operator const hash_digest&() const NOEXCEPT
+hash256::operator const hash_digest&() const
 {
     return value_;
 }
 
-std::istream& operator>>(std::istream& stream, hash256& argument) THROWS
+std::istream& operator>>(std::istream& input, hash256& argument)
 {
-    std::string base16;
-    stream >> base16;
+    std::string hexcode;
+    input >> hexcode;
 
-    if (!decode_hash(argument.value_, base16))
-        throw istream_exception(base16);
+    if (!decode_hash(argument.value_, hexcode))
+    {
+        using namespace boost::program_options;
+        BOOST_THROW_EXCEPTION(invalid_option_value(hexcode));
+    }
 
-    return stream;
+    return input;
 }
 
-std::ostream& operator<<(std::ostream& stream, const hash256& argument) NOEXCEPT
+std::ostream& operator<<(std::ostream& output, const hash256& argument)
 {
-    stream << encode_hash(argument.value_);
-    return stream;
+    output << encode_hash(argument.value_);
+    return output;
 }
 
 } // namespace config

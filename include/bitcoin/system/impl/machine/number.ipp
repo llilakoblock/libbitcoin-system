@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2022 libbitcoin developers (see AUTHORS)
+ * Copyright (c) 2011-2019 libbitcoin developers (see AUTHORS)
  *
  * This file is part of libbitcoin.
  *
@@ -19,190 +19,260 @@
 #ifndef LIBBITCOIN_SYSTEM_MACHINE_NUMBER_IPP
 #define LIBBITCOIN_SYSTEM_MACHINE_NUMBER_IPP
 
-#include <algorithm>
-#include <iterator>
-#include <bitcoin/system/data/data.hpp>
-#include <bitcoin/system/define.hpp>
-#include <bitcoin/system/endian/endian.hpp>
-#include <bitcoin/system/math/math.hpp>
+#include <cstdint>
+#include <cstdlib>
+#include <stdexcept>
+#include <bitcoin/system/compat.hpp>
+#include <bitcoin/system/constants.hpp>
+#include <bitcoin/system/math/limits.hpp>
+#include <bitcoin/system/utility/assert.hpp>
 
 namespace libbitcoin {
 namespace system {
 namespace machine {
-namespace number {
 
-#define INTEGER_TEMPLATE template <size_t Size, \
-    if_not_greater<Size, sizeof(int64_t)> If>
-#define INTEGER_CLASS integer<Size, If>
+static const uint64_t unsigned_max_int64 = max_int64;
+static const uint64_t absolute_min_int64 = min_int64;
+static const uint64_t negative_bit = number::negative_sign;
 
-// ****************************************************************************
-// CONSENSUS:
-// Due to compression, a leading sign byte is required if high bit is set.
-// This produces two zero representations (+/-0). The subsequent byte-based
-// overflow constraint thereby restricts the stack's 64-bit integer domain by
-// one value. An implementation that either avoided vectorization or vector
-// compression in the first place, or later implemented the overflow guard over
-// the converted integeral would have avoided this seam. These were both
-// premature optimizations, as a variant stack is more efficient than variably-
-// lengthed byte vector integral storage. The resulting integer domain
-// reduction is captured by the is_overflow functions below.
-// ****************************************************************************
-
-constexpr uint8_t positive_sign_byte = 0x00;
-constexpr uint8_t negative_sign_byte = to_negated(positive_sign_byte);
-
-// integer
-// ----------------------------------------------------------------------------
-
-INTEGER_TEMPLATE
-inline constexpr bool INTEGER_CLASS::
-from_integer(Integer& out, int64_t vary) NOEXCEPT
+inline bool is_negative(const data_chunk& data)
 {
-    out = possible_narrow_cast<Integer>(vary);
-    return !is_overflow(vary);
+    return (data.back() & number::negative_sign) != 0;
 }
 
-INTEGER_TEMPLATE
-inline bool INTEGER_CLASS::
-from_chunk(Integer& out, const data_chunk& vary) NOEXCEPT
+inline number::number()
+  : number(0)
 {
-    out = 0;
+}
 
-    // Just an optimization.
-    if (strict_zero(vary))
-        return true;
+inline number::number(int64_t value)
+  : value_(value)
+{
+}
 
-    if (is_overflow(vary))
+// Properties
+//-----------------------------------------------------------------------------
+
+// The data is interpreted as little-endian.
+inline bool number::set_data(const data_chunk& data, size_t max_size)
+{
+    if (data.size() > max_size)
         return false;
 
-    out = from_little_endian<Integer>(vary);
+    value_ = 0;
 
-    // Restore sign from indication.
-    if (is_negated(vary.back()))
-        out = to_unnegated(out);
+    if (data.empty())
+        return true;
+
+    // This is "from little endian" with a variable buffer.
+    for (size_t i = 0; i != data.size(); ++i)
+        value_ |= static_cast<int64_t>(data[i]) << (8 * i);
+
+    if (is_negative(data))
+    {
+        const auto last_shift = 8 * (data.size() - 1);
+        const auto mask = ~(negative_bit << last_shift);
+        value_ = -1 * (static_cast<int64_t>(value_ & mask));
+    }
 
     return true;
 }
 
-// protected
-INTEGER_TEMPLATE
-inline bool INTEGER_CLASS::
-strict_zero(const data_chunk& vary) NOEXCEPT
+// The result is little-endian.
+inline data_chunk number::data() const
 {
-    return vary.empty();
-}
-
-// protected
-INTEGER_TEMPLATE
-inline bool INTEGER_CLASS::
-is_overflow(const data_chunk& vary) NOEXCEPT
-{
-    return vary.size() > Size;
-}
-
-// protected
-INTEGER_TEMPLATE
-inline constexpr bool INTEGER_CLASS::
-is_overflow(int64_t value) NOEXCEPT
-{
-    return is_limited(value, bitcoin_min<Size>, bitcoin_max<Size>);
-}
-
-// chunk
-// ----------------------------------------------------------------------------
-// Minimally-sized byte encoding, with extra allocated byte if negated.
-
-inline data_chunk chunk::from_bool(bool vary) NOEXCEPT
-{
-    return { bc::to_int<uint8_t>(vary) };
-}
-
-inline data_chunk chunk::from_integer(int64_t vary) NOEXCEPT
-{
-    // absolute(minimum<int64_t>) guarded by the presumption of int32 ops.
-    BC_ASSERT(!is_negate_overflow(vary));
-
-    // Just an optimization.
-    if (is_zero(vary))
+    if (value_ == 0)
         return {};
 
-    const auto value = absolute(vary);
-    const auto negated = is_negated(value);
-    const auto negative = is_negative(vary);
+    data_chunk data;
+    const auto set_negative = value_ < 0;
+    uint64_t absolute = set_negative ? -value_ : value_;
 
-    auto bytes = to_little_endian_size(value, to_int(negated));
+    // This is "to little endian" with a minimal buffer.
+    while (absolute != 0)
+    {
+        data.push_back(static_cast<uint8_t>(absolute));
+        absolute >>= 8;
+    }
 
-    // Indicate the sign.
-    if (negated && negative)
-        bytes.push_back(negative_sign_byte);
-    else if (negated)
-        bytes.push_back(positive_sign_byte);
-    else if (negative)
-        bytes.back() = to_negated(bytes.back());
+    const auto negative_bit_set = is_negative(data);
 
-    return bytes;
+    // If the most significant byte is >= 0x80 and the value is negative,
+    // push a new 0x80 byte that will be popped off when converting to
+    // an integral.
+    if (negative_bit_set && set_negative)
+        data.push_back(number::negative_sign);
+
+    // If the most significant byte is >= 0x80 and the value is positive,
+    // push a new zero-byte to make the significant byte < 0x80 again.
+    else if (negative_bit_set)
+        data.push_back(0);
+
+    // If the most significant byte is < 0x80 and the value is negative,
+    // add 0x80 to it, since it will be subtracted and interpreted as
+    // a negative when converting to an integral.
+    else if (set_negative)
+        data.back() |= number::negative_sign;
+
+    return data;
 }
 
-#undef INTEGER_CLASS
-#undef INTEGER_TEMPLATE
-
-// boolean
-// ----------------------------------------------------------------------------
-// C++20: constexpr.
-
-template <size_t Size,
-    if_not_greater<Size, sizeof(int64_t)>>
-inline constexpr signed_type<Size> boolean::to_integer(bool vary) NOEXCEPT
+inline int32_t number::int32() const
 {
-    // The cast can safely be ignored, which is why Size is defaulted.
-    return bc::to_int<signed_type<Size>>(vary);
+    return domain_constrain<int32_t>(value_);
 }
 
-inline bool boolean::from_chunk(const data_chunk& vary) NOEXCEPT
+inline int64_t number::int64() const
 {
-    // An optimization, also guards vector empty.
-    if (strict_false(vary))
-        return false;
-
-    // Boolean is not overflow constrained (any length of bytes is valid).
-    ////if (is_overflow(vary))
-    ////    return false;
-
-    if (!is_sign_byte(vary.back()))
-        return true;
-
-    // A logical zero is any +/- sequence of zero bytes (sign excluded above).
-    return std::any_of(vary.begin(), std::prev(vary.end()), is_nonzero<uint8_t>);
-
-    // any_of optimizes by eliminating this conversion, allocation, and copy.
-    ////return bc::to_bool(from_little_endian<uintx>(vary));
+    return value_;
 }
 
-inline bool boolean::strict_from_chunk(const data_chunk& vary) NOEXCEPT
+// Stack Helpers
+//-----------------------------------------------------------------------------
+
+inline bool number::is_true() const
 {
-    // True if not strictly false.
-    return !strict_false(vary);
+    return value_ != 0;
 }
 
-inline constexpr bool boolean::to_bool(int64_t vary) NOEXCEPT
+inline bool number::is_false() const
 {
-    // Boolean is not overflow constrained.
-    return bc::to_bool(vary);
+    return value_ == 0;
 }
 
-// protected
-inline bool boolean::strict_false(const data_chunk& vary) NOEXCEPT
+// Operators
+//-----------------------------------------------------------------------------
+
+inline bool number::operator>(int64_t value) const
 {
-    return vary.empty();
+    return value_ > value;
 }
 
-// protected
-inline constexpr bool boolean::is_sign_byte(uint8_t byte) NOEXCEPT
+inline bool number::operator<(int64_t value) const
 {
-    return (byte == positive_sign_byte) || (byte == negative_sign_byte);
+    return value_ < value;
 }
 
-} // namespace number
+inline bool number::operator>=(int64_t value) const
+{
+    return value_ >= value;
+}
+
+inline bool number::operator<=(int64_t value) const
+{
+    return value_ <= value;
+}
+
+inline bool number::operator==(int64_t value) const
+{
+    return value_ == value;
+}
+
+inline bool number::operator!=(int64_t value) const
+{
+    return value_ != value;
+}
+
+inline bool number::operator>(const number& other) const
+{
+    return operator>(other.value_);
+}
+
+inline bool number::operator<(const number& other) const
+{
+    return operator<(other.value_);
+}
+
+inline bool number::operator>=(const number& other) const
+{
+    return operator>=(other.value_);
+}
+
+inline bool number::operator<=(const number& other) const
+{
+    return operator<=(other.value_);
+}
+
+inline bool number::operator==(const number& other) const
+{
+    return operator==(other.value_);
+}
+
+inline bool number::operator!=(const number& other) const
+{
+    return operator!=(other.value_);
+}
+
+inline number number::operator+(int64_t value) const
+{
+    BITCOIN_ASSERT_MSG(value == 0 ||
+        (value > 0 && value_ <= max_int64 - value) ||
+        (value < 0 && value_ >= min_int64 - value), "overflow");
+
+    return number(value_ + value);
+}
+
+inline number number::operator-(int64_t value) const
+{
+    BITCOIN_ASSERT_MSG(value == 0 ||
+        (value > 0 && value_ >= min_int64 + value) ||
+        (value < 0 && value_ <= max_int64 + value), "underflow");
+
+    return number(value_ - value);
+}
+
+inline number number::operator+(const number& other) const
+{
+    return operator+(other.value_);
+}
+
+inline number number::operator-(const number& other) const
+{
+    return operator-(other.value_);
+}
+
+inline number number::operator+() const
+{
+    return *this;
+}
+
+inline number number::operator-() const
+{
+    BITCOIN_ASSERT_MSG(value_ != min_int64, "out of range");
+
+    return number(-value_);
+}
+
+inline number& number::operator+=(const number& other)
+{
+    return operator+=(other.value_);
+}
+
+inline number& number::operator-=(const number& other)
+{
+    return operator-=(other.value_);
+}
+
+inline number& number::operator+=(int64_t value)
+{
+    BITCOIN_ASSERT_MSG(value == 0 ||
+        (value > 0 && value_ <= max_int64 - value) ||
+        (value < 0 && value_ >= min_int64 - value), "overflow");
+
+    value_ += value;
+    return *this;
+}
+
+inline number& number::operator-=(int64_t value)
+{
+    BITCOIN_ASSERT_MSG(value == 0 ||
+        (value > 0 && value_ >= min_int64 + value) ||
+        (value < 0 && value_ <= max_int64 + value), "underflow");
+
+    value_ -= value;
+    return *this;
+}
+
 } // namespace machine
 } // namespace system
 } // namespace libbitcoin

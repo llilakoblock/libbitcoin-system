@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2022 libbitcoin developers (see AUTHORS)
+ * Copyright (c) 2011-2019 libbitcoin developers (see AUTHORS)
  *
  * This file is part of libbitcoin.
  *
@@ -19,814 +19,424 @@
 #ifndef LIBBITCOIN_SYSTEM_MACHINE_PROGRAM_IPP
 #define LIBBITCOIN_SYSTEM_MACHINE_PROGRAM_IPP
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <iterator>
-#include <utility>
-#include <variant>
-#include <bitcoin/system/chain/chain.hpp>
-#include <bitcoin/system/crypto/crypto.hpp>
-#include <bitcoin/system/data/data.hpp>
-#include <bitcoin/system/define.hpp>
-#include <bitcoin/system/machine/interpreter.hpp>
-#include <bitcoin/system/math/math.hpp>
+#include <bitcoin/system/chain/script.hpp>
+#include <bitcoin/system/chain/transaction.hpp>
+#include <bitcoin/system/chain/witness.hpp>
+#include <bitcoin/system/constants.hpp>
+#include <bitcoin/system/machine/number.hpp>
+#include <bitcoin/system/machine/operation.hpp>
+#include <bitcoin/system/machine/script_version.hpp>
+#include <bitcoin/system/utility/assert.hpp>
+#include <bitcoin/system/utility/data.hpp>
 
 namespace libbitcoin {
 namespace system {
 namespace machine {
 
-using namespace system::chain;
-using namespace system::error;
+// Constant registers.
+//-----------------------------------------------------------------------------
 
-// Constructors.
-// ----------------------------------------------------------------------------
-
-// Input script run (default/empty stack).
-// 'tx' must remain in scope, this holds state referenced by weak pointers.
-// This expectation is guaranteed by the retained tx reference.
-template <typename Stack>
-inline program<Stack>::
-program(const chain::transaction& tx, const input_iterator& input,
-     uint32_t forks) NOEXCEPT
-  : transaction_(tx),
-    input_(input),
-    script_((*input)->script_ptr()),
-    forks_(forks),
-    value_(max_uint64),
-    version_(script_version::unversioned),
-    witness_(),
-    primary_()
+// Check initial program state for validity (i.e. can evaluation return true).
+inline bool program::is_invalid() const
 {
+    // Stack elements must be within push size limit (bip141).
+    // Invalid operations indicates a failure deserializing individual ops.
+    return !script_.is_valid_operations()
+        || script_.is_unspendable()
+        || script_.is_oversized()
+        || !chain::witness::is_push_size(primary_);
 }
 
-// Legacy p2sh or prevout script run (copied input stack - use first).
-// 'other' must remain in scope, this holds state referenced by weak pointers.
-// This expectation is guaranteed by the retained transaction_ member reference
-// and copied program tether (which is not tx state).
-template <typename Stack>
-inline program<Stack>::
-program(const program& other, const script::cptr& script) NOEXCEPT
-  : transaction_(other.transaction_),
-    input_(other.input_),
-    script_(script),
-    forks_(other.forks_),
-    value_(other.value_),
-    version_(other.version_),
-    witness_(),
-    primary_(other.primary_)
+inline uint32_t program::forks() const
 {
+    return forks_;
 }
 
-// Legacy p2sh or prevout script run (moved input stack/tether - use last).
-template <typename Stack>
-inline program<Stack>::
-program(program&& other, const script::cptr& script) NOEXCEPT
-  : transaction_(other.transaction_),
-    input_(other.input_),
-    script_(script),
-    forks_(other.forks_),
-    value_(other.value_),
-    version_(other.version_),
-    witness_(),
-    primary_(std::move(other.primary_))
+inline uint32_t program::input_index() const
 {
+    return input_index_;
 }
 
-// Witness script run (witness-initialized stack).
-// 'tx', 'input' (and iterated chain::input) must remain in scope, as these
-// hold chunk state weak references. A witness pointer is explicitly retained
-// to guarantee the lifetime of its elements.
-template <typename Stack>
-inline program<Stack>::
-program(const chain::transaction& tx, const input_iterator& input,
-    const script::cptr& script, uint32_t forks, script_version version,
-    const chunk_cptrs_ptr& witness) NOEXCEPT
-  : transaction_(tx),
-    input_(input),
-    script_(script),
-    forks_(forks),
-    value_((*input)->prevout->value()),
-    version_(version),
-    witness_(witness),
-    primary_(projection<Stack>(*witness))
+inline uint64_t program::value() const
 {
+    return value_;
 }
 
-// Public.
-// ----------------------------------------------------------------------------
-
-template <typename Stack>
-inline bool program<Stack>::
-is_true(bool clean_stack) const NOEXCEPT
+inline script_version program::version() const
 {
-    return (!clean_stack || is_stack_clean()) && !is_stack_empty() &&
-        peek_bool_();
+    return version_;
 }
 
-template <typename Stack>
-inline const data_chunk& program<Stack>::
-pop() NOEXCEPT
-{
-    BC_ASSERT_MSG(!is_stack_empty(), "pop from empty stack");
-
-    return *pop_chunk_();
-}
-
-// Non-public.
-// ============================================================================
-
-template <typename Stack>
-INLINE bool program<Stack>::
-is_prefail() const NOEXCEPT
-{
-    return script_->is_prefail();
-}
-
-template <typename Stack>
-INLINE typename program<Stack>::op_iterator program<Stack>::
-begin() const NOEXCEPT
-{
-    return script_->ops().begin();
-}
-
-template <typename Stack>
-INLINE typename program<Stack>::op_iterator program<Stack>::
-end() const NOEXCEPT
-{
-    return script_->ops().end();
-}
-
-template <typename Stack>
-INLINE const chain::input& program<Stack>::
-input() const NOEXCEPT
-{
-    return **input_;
-}
-
-template <typename Stack>
-INLINE const chain::transaction& program<Stack>::
-transaction() const NOEXCEPT
+inline const chain::transaction& program::transaction() const
 {
     return transaction_;
 }
 
-template <typename Stack>
-INLINE bool program<Stack>::
-is_enabled(chain::forks rule) const NOEXCEPT
+// Program registers.
+//-----------------------------------------------------------------------------
+
+inline program::op_iterator program::begin() const
 {
-    return to_bool(forks_ & rule);
+    return script_.begin();
 }
 
-// TODO: only perform is_push_size check on witness initialized stack.
-// TODO: others are either empty or presumed push_size from prevout script run.
-template <typename Stack>
-INLINE script_error_t program<Stack>::
-validate() const NOEXCEPT
+inline program::op_iterator program::jump() const
 {
-    // TODO: nops rule must first be enabled in tests and config.
-    const auto bip141 = is_enabled(forks::bip141_rule);
-
-    // The script was determined by the parser to contain an invalid opcode.
-    if (is_prefail())
-        return error::prefail_script;
-
-    // bip_141 introduces an initialized stack, so must validate.
-    if (bip141 && witness_ && !witness::is_push_size(*witness_))
-        return error::invalid_witness_stack;
-
-    // The nops_rule establishes script size limit.
-    return script_->is_oversized() ? error::invalid_script_size :
-        error::script_success;
+    return jump_;
 }
 
-// Primary stack (conversions).
-// ----------------------------------------------------------------------------
-
-// static
-template <typename Stack>
-INLINE bool program<Stack>::
-equal_chunks(const stack_variant& left, const stack_variant& right) NOEXCEPT
+inline program::op_iterator program::end() const
 {
-    return primary_stack::equal_chunks(left, right);
+    return script_.end();
 }
 
-template <typename Stack>
-INLINE bool program<Stack>::
-peek_bool_() const NOEXCEPT
+inline size_t program::operation_count() const
 {
-    return primary_.peek_bool();
+    return operation_count_;
 }
 
-template <typename Stack>
-INLINE chunk_xptr program<Stack>::
-peek_chunk_() const NOEXCEPT
+// Instructions.
+//-----------------------------------------------------------------------------
+
+inline bool operation_overflow(size_t count)
 {
-    return primary_.peek_chunk();
+    return count > max_counted_ops;
 }
 
-template <typename Stack>
-INLINE size_t program<Stack>::
-peek_size() const NOEXCEPT
+inline bool program::increment_operation_count(const operation& op)
 {
-    return primary_.peek_size();
+    // Addition is safe due to script size metadata.
+    if (operation::is_counted(op.code()))
+        ++operation_count_;
+
+    return !operation_overflow(operation_count_);
+}
+
+inline bool program::increment_operation_count(int32_t public_keys)
+{
+    static const auto max_keys = static_cast<int32_t>(max_script_public_keys);
+
+    // bit.ly/2d1bsdB
+    if (public_keys < 0 || public_keys > max_keys)
+        return false;
+
+    // Addition is safe due to script size metadata.
+    operation_count_ += public_keys;
+    return !operation_overflow(operation_count_);
+}
+
+inline bool program::set_jump_register(const operation& op, int32_t offset)
+{
+    if (script_.empty())
+        return false;
+
+    const auto finder = [&op](const operation& operation)
+    {
+        return &operation == &op;
+    };
+
+    // This is not efficient but is simplifying and subscript is rarely used.
+    // Otherwise we must track the program counter through each evaluation.
+    jump_ = std::find_if(script_.begin(), script_.end(), finder);
+
+    if (jump_ == script_.end())
+        return false;
+
+    // This does not require guard because op_codeseparator can only increment.
+    // Even if the opcode is last in the sequnce the increment is valid (end).
+    BITCOIN_ASSERT_MSG(offset == 1, "unguarded jump offset");
+
+    jump_ += offset;
+    return true;
 }
 
 // Primary stack (push).
-// ----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 
-// This is the only source of push (write) tethering.
-template <typename Stack>
-INLINE void program<Stack>::
-push_chunk(data_chunk&& datum) NOEXCEPT
+// push
+inline void program::push(bool value)
 {
-    primary_.push(std::move(datum));
+    push_move(value ? value_type{ number::positive_1 } : value_type{});
 }
 
-// Passing data_chunk& would be poor interface design, as it would allow
-// derived callers to (unsafely) store raw pointers to unshared data_chunk.
-BC_PUSH_WARNING(SMART_PTR_NOT_NEEDED)
-BC_PUSH_WARNING(NO_VALUE_OR_CONST_REF_SHARED_PTR)
-template <typename Stack>
-INLINE void program<Stack>::
-push_chunk(const chunk_cptr& datum) NOEXCEPT
-BC_POP_WARNING()
-BC_POP_WARNING()
+// Be explicit about the intent to move or copy, to get compiler help.
+inline void program::push_move(value_type&& item)
 {
-    primary_.emplace_chunk(datum.get());
+    primary_.push_back(std::move(item));
 }
 
-// private
-template <typename Stack>
-INLINE void program<Stack>::
-push_chunk(const chunk_xptr& datum) NOEXCEPT
+// Be explicit about the intent to move or copy, to get compiler help.
+inline void program::push_copy(const value_type& item)
 {
-    primary_.emplace_chunk(datum);
-}
-
-template <typename Stack>
-INLINE void program<Stack>::
-push_bool(bool value) NOEXCEPT
-{
-    primary_.emplace_boolean(value);
-}
-
-template <typename Stack>
-INLINE void program<Stack>::
-push_signed64(int64_t value) NOEXCEPT
-{
-    primary_.emplace_integer(value);
-}
-
-template <typename Stack>
-INLINE void program<Stack>::
-push_length(size_t value) NOEXCEPT
-{
-    // This is guarded by stack size and push data limits.
-    BC_ASSERT_MSG(value <= max_int64, "integer overflow");
-
-    push_signed64(possible_narrow_sign_cast<int64_t>(value));
+    primary_.push_back(item);
 }
 
 // Primary stack (pop).
-// ----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 
-// This tethers a chunk if the stack value is not chunk.
-template <typename Stack>
-INLINE chunk_xptr program<Stack>::
-pop_chunk_() NOEXCEPT
+// This must be guarded.
+inline data_chunk program::pop()
 {
-    const auto value = peek_chunk_();
-    drop_();
+    BITCOIN_ASSERT(!empty());
+    const auto value = primary_.back();
+    primary_.pop_back();
     return value;
 }
 
-// This tethers chunks if the stack values are not chunk.
-template <typename Stack>
-INLINE bool program<Stack>::
-pop_chunks(chunk_xptrs& data, size_t count) NOEXCEPT
+inline bool program::pop(int32_t& out_value)
 {
-    if (stack_size() < count)
+    number value;
+    if (!pop(value))
         return false;
 
-    data.reserve(count);
-    for (size_t index = 0; index < count; ++index)
-        data.push_back(pop_chunk_());
-
+    out_value = value.int32();
     return true;
 }
 
-template <typename Stack>
-INLINE bool program<Stack>::
-pop_bool_() NOEXCEPT
+inline bool program::pop(number& out_number, size_t maxiumum_size)
 {
-    const auto value = peek_bool_();
-    drop_();
-    return value;
+    return !empty() && out_number.set_data(pop(), maxiumum_size);
 }
 
-template <typename Stack>
-INLINE bool program<Stack>::
-pop_strict_bool_() NOEXCEPT
+inline bool program::pop_binary(number& first, number& second)
 {
-    const auto value = primary_.peek_strict_bool();
-    drop_();
-    return value;
+    // The right hand side number is at the top of the stack.
+    return pop(first) && pop(second);
 }
 
-// private
-template <typename Stack>
-INLINE bool program<Stack>::
-pop_signed32_(int32_t& value) NOEXCEPT
+inline bool program::pop_ternary(number& first, number& second, number& third)
 {
-    const auto result = peek_signed32_(value);
-    drop_();
-    return result;
-}
-
-template <typename Stack>
-INLINE bool program<Stack>::
-pop_signed32(int32_t& value) NOEXCEPT
-{
-    if (is_stack_empty())
-        return false;
-
-    return pop_signed32_(value);
-}
-
-template <typename Stack>
-INLINE bool program<Stack>::
-pop_binary32(int32_t& left, int32_t& right) NOEXCEPT
-{
-    if (stack_size() < 2)
-        return false;
-
-    // The right hand side operand is at the top of the stack.
-    return pop_signed32_(right) && pop_signed32_(left);
-}
-
-template <typename Stack>
-INLINE bool program<Stack>::
-pop_ternary32(int32_t& upper, int32_t& lower,
-    int32_t& value) NOEXCEPT
-{
-    if (stack_size() < 3)
-        return false;
-
     // The upper bound is at stack top, lower bound next, value next.
-    return pop_signed32_(upper) && pop_signed32_(lower) &&
-        pop_signed32_(value);
+    return pop(first) && pop(second) && pop(third);
 }
 
-// ************************************************************************
-// CONSENSUS: Satoshi limits this value to the int32_t domain (getint()).
-// This value is only used for stack indexing (key/sig counts & pick/roll).
-// The upper bound of int32_t always exceeds the possible stack size, which
-// is checked downstream. Similarly, a negative causes a downstream script
-// failure. As such it is sufficient to fail on non-idexability here,
-// allowing the value to be returned as a valid and unsigned stack index.
-// ************************************************************************
-template <typename Stack>
-INLINE bool program<Stack>::
-pop_index32(size_t& index) NOEXCEPT
+// Determines if popped value is valid post-pop stack index and returns index.
+inline bool program::pop_position(stack_iterator& out_position)
 {
-    int32_t value;
-    if (!pop_signed32(value))
+    int32_t signed_index;
+    if (!pop(signed_index))
         return false;
 
-    if (is_negative(value))
+    // Ensure the index is within bounds.
+
+    if (signed_index < 0)
         return false;
 
-    // Cast guarded by stack size.
-    index = limit<size_t>(value);
+    const auto index = static_cast<uint32_t>(signed_index);
 
-    // True if popped value valid post-pop stack index (precluded if size < 2).
-    return index < stack_size();
-}
-
-// private
-template <typename Stack>
-INLINE bool program<Stack>::
-peek_signed32_(int32_t& value) const NOEXCEPT
-{
-    return primary_.peek_signed4(value);
-}
-
-// private
-template <typename Stack>
-INLINE bool program<Stack>::
-peek_signed40_(int64_t& value) const NOEXCEPT
-{
-    return primary_.peek_signed5(value);
-}
-
-// ****************************************************************************
-// CONSENSUS: Read of 40 bit (vs. 32 bit) value for comparison against uint32_t
-// input.sequence allows use of the full unsigned 32 bit domain, without use of
-// the negative range.
-// ****************************************************************************
-template <typename Stack>
-INLINE bool program<Stack>::
-peek_unsigned32(uint32_t& value) const NOEXCEPT
-{
-    if (is_stack_empty())
+    if (index >= size())
         return false;
 
-    int64_t signed64;
-    if (!peek_signed40_(signed64) || is_negative(value))
-        return false;
-
-    // 32 bits are used in unsigned input.sequence compare.
-    value = narrow_sign_cast<uint32_t>(signed64);
+    out_position = position(index);
     return true;
 }
 
-// ****************************************************************************
-// CONSENSUS: Read of 40 bit (vs. 32 bit) value for comparison against uint32_t
-// input.locktime allows use of the full unsigned 32 bit domain, without use of
-// the negative range. Otherwise a 2038 limit (beyond the inherent 2106 limit)
-// would have been introduced.
-// ****************************************************************************
-template <typename Stack>
-INLINE bool program<Stack>::
-peek_unsigned40(uint64_t& value) const NOEXCEPT
+// pop1/pop2/.../pop[count]
+inline bool program::pop(data_stack& section, size_t count)
 {
-    if (is_stack_empty())
+    if (size() < count)
         return false;
 
-    int64_t signed64;
-    if (!peek_signed40_(signed64) || is_negative(value))
-        return false;
+    for (size_t index = 0; index < count; ++index)
+        section.push_back(pop());
 
-    // 40 bits are usable in unsigned tx.locktime compare.
-    value = sign_cast<uint64_t>(signed64);
     return true;
 }
 
-// Primary stack (variant - index).
-// ----------------------------------------------------------------------------
-// Stack index is zero-based, back() is element zero.
+// Primary push/pop optimizations (active).
+//-----------------------------------------------------------------------------
 
-// This swaps the variant elements of the stack vector.
-template <typename Stack>
-INLINE void program<Stack>::
-swap_(size_t left_index, size_t right_index) NOEXCEPT
+// pop1/pop2/.../pop[index]/push[index]/.../push2/push1/push[index]
+inline void program::duplicate(size_t index)
 {
-    primary_.swap(left_index, right_index);
+    push_copy(item(index));
 }
 
-template <typename Stack>
-INLINE void program<Stack>::
-erase_(size_t index) NOEXCEPT
+// pop1/pop2/push1/push2
+inline void program::swap(size_t index_left, size_t index_right)
 {
-    primary_.erase(index);
+    // TODO: refactor to allow DRY without const_cast here.
+    std::swap(
+        const_cast<data_stack::value_type&>(item(index_left)),
+        const_cast<data_stack::value_type&>(item(index_right)));
 }
 
-template <typename Stack>
-INLINE const stack_variant& program<Stack>::
-peek_(size_t index) const NOEXCEPT
+// pop1/pop2/.../pop[pos-1]/pop[pos]/push[pos-1]/.../push2/push1
+inline void program::erase(const stack_iterator& position)
 {
-    return primary_.peek(index);
+    primary_.erase(position);
 }
 
-// Primary stack (variant - top).
-// ----------------------------------------------------------------------------
-
-template <typename Stack>
-INLINE void program<Stack>::
-drop_() NOEXCEPT
+// pop1/pop2/.../pop[i]/pop[first]/.../pop[last]/push[i]/.../push2/push1
+inline void program::erase(const stack_iterator& first,
+    const stack_iterator& last)
 {
-    primary_.drop();
+    primary_.erase(first, last);
 }
 
-template <typename Stack>
-INLINE void program<Stack>::
-push_variant(const stack_variant& vary) NOEXCEPT
+// Primary push/pop optimizations (passive).
+//-----------------------------------------------------------------------------
+
+// Reversed byte order in this example (big-endian).
+// []               : false (empty)
+// [00 00 00 00 00] : false (+zero)
+// [80 00 00 00 00] : false (-zero)
+// [42 00 00 00 00] : true
+// [00 80 00 00 00] : true
+
+// private
+inline bool program::stack_to_bool(bool clean) const
 {
-    primary_.push(vary);
+    const auto& top = primary_.back();
+
+    if (top.empty() || (clean && primary_.size() != 1))
+        return false;
+
+    auto not_zero = [](uint8_t value) { return (value != number::positive_0); };
+    auto non_zero = [](uint8_t value) { return (value & ~number::negative_sign)
+        != number::positive_0; };
+
+    return non_zero(top.back()) ||
+        std::any_of(top.begin(), std::prev(top.end()), not_zero);
 }
 
-template <typename Stack>
-INLINE const stack_variant& program<Stack>::
-peek_() const NOEXCEPT
-{
-    return primary_.top();
-}
-
-template <typename Stack>
-INLINE stack_variant program<Stack>::
-pop_() NOEXCEPT
-{
-    return primary_.pop();
-}
-
-// Primary stack state (untyped).
-// ----------------------------------------------------------------------------
-
-template <typename Stack>
-INLINE size_t program<Stack>::
-stack_size() const NOEXCEPT
-{
-    return primary_.size();
-}
-
-template <typename Stack>
-INLINE bool program<Stack>::
-is_stack_empty() const NOEXCEPT
+inline bool program::empty() const
 {
     return primary_.empty();
 }
 
-template <typename Stack>
-INLINE bool program<Stack>::
-is_stack_overflow() const NOEXCEPT
+// This must be guarded (intended for interpreter internal use).
+inline bool program::stack_true(bool clean) const
 {
-    // Addition is safe due to stack size constraint.
-    return (stack_size() + alternate_.size()) > max_stack_size;
+    BITCOIN_ASSERT(!empty());
+    return stack_to_bool(clean);
 }
 
-// private
-template <typename Stack>
-INLINE bool program<Stack>::
-is_stack_clean() const NOEXCEPT
+// This is safe to call when empty (intended for completion handlers).
+inline bool program::stack_result(bool clean) const
 {
-    return stack_size() == one;
+    return !empty() && stack_true(clean);
+}
+
+inline bool program::is_stack_overflow() const
+{
+    // bit.ly/2cowHlP
+    // Addition is safe due to script size metadata.
+    return size() + alternate_.size() > max_stack_size;
+}
+
+inline bool program::if_(const operation& op) const
+{
+    // Skip operation if failed and the operator is unconditional.
+    return op.is_conditional() || succeeded();
+}
+
+// This must be guarded.
+inline const data_stack::value_type& program::item(size_t index) /*const*/
+{
+    return *position(index);
+}
+
+inline bool program::top(number& out_number, size_t maxiumum_size)
+{
+    return !empty() && out_number.set_data(item(0), maxiumum_size);
+}
+
+// This must be guarded.
+inline program::stack_iterator program::position(size_t index) /*const*/
+{
+    // Decrementing 1 makes the stack index zero-based (unlike satoshi).
+    BITCOIN_ASSERT(index < size());
+    return std::prev(primary_.end(), ++index);
+}
+
+// Pop jump-to-end, push all back, use to construct a script.
+inline operation::list program::subscript() const
+{
+    operation::list ops;
+
+    for (auto op = jump(); op != end(); ++op)
+        ops.push_back(*op);
+
+    return ops;
+}
+
+inline size_t program::size() const
+{
+    return primary_.size();
 }
 
 // Alternate stack.
-// ----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 
-template <typename Stack>
-INLINE bool program<Stack>::
-is_alternate_empty() const NOEXCEPT
+inline bool program::empty_alternate() const
 {
     return alternate_.empty();
 }
 
-// Moving a shared pointer to the alternate stack is optimal and acceptable.
-BC_PUSH_WARNING(NO_RVALUE_REF_SHARED_PTR)
-template <typename Stack>
-INLINE void program<Stack>::
-push_alternate(stack_variant&& vary) NOEXCEPT
-BC_POP_WARNING()
+inline void program::push_alternate(value_type&& value)
 {
-    BC_PUSH_WARNING(NO_THROW_IN_NOEXCEPT)
-    alternate_.push_back(std::move(vary));
-    BC_POP_WARNING()
+    alternate_.push_back(std::move(value));
 }
 
-template <typename Stack>
-INLINE stack_variant program<Stack>::
-pop_alternate_() NOEXCEPT
+// This must be guarded.
+inline program::value_type program::pop_alternate()
 {
-    BC_ASSERT(!alternate_.empty());
-
-    stack_variant value{ std::move(alternate_.back()) };
+    BITCOIN_ASSERT(!alternate_.empty());
+    const auto value = alternate_.back();
     alternate_.pop_back();
     return value;
 }
 
 // Conditional stack.
-// ----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 
-template <typename Stack>
-INLINE void program<Stack>::
-begin_if(bool value) NOEXCEPT
+inline void program::open(bool value)
 {
-    // Addition is safe due to script size constraint.
-    BC_ASSERT(value || !is_add_overflow(negative_condition_count_, one));
-
-    negative_condition_count_ += (value ? 0 : 1);
+    negative_count_ += (value ? 0 : 1);
     condition_.push_back(value);
 }
 
-// ****************************************************************************
-// CONSENSUS: "You may have noticed the strange behavior of Bitcoin's ELSE
-// statement. Bitcoin allows one to switch between true and false conditions
-// several times. For example, the following script is valid and leaves the
-// value 2 on the stack: 1 OP_IF OP_ELSE OP_ELSE 2 OP_ENDIF"
-// bitslog.com/2017/04/17/new-quadratic-delays-in-bitcoin-scripts
-// ****************************************************************************
-template <typename Stack>
-INLINE void program<Stack>::
-else_if_() NOEXCEPT
+// This must be guarded.
+inline void program::negate()
 {
-    // Subtraction must be guarded by caller logical constraints.
-    BC_ASSERT(!is_balanced());
+    BITCOIN_ASSERT(!closed());
+    const auto value = condition_.back();
+    negative_count_ += (value ? 1 : -1);
+    condition_.back() = !value;
 
-    // Addition is safe due to script size constraint.
-    BC_ASSERT(condition_.back() ||
-        !is_add_overflow(negative_condition_count_, one));
-
-    negative_condition_count_ += (condition_.back() ? 1 : -1);
-    condition_.back() = !condition_.back();
+    // Optimized above to avoid succeeded loop.
+    ////condition_.back() = !condition_.back();
 }
 
-template <typename Stack>
-INLINE void program<Stack>::
-end_if_() NOEXCEPT
+// This must be guarded.
+inline void program::close()
 {
-    // Subtraction must be guarded by caller logical constraints.
-    BC_ASSERT(!is_balanced());
-
-    negative_condition_count_ += (condition_.back() ? 0 : -1);
+    BITCOIN_ASSERT(!closed());
+    const auto value = condition_.back();
+    negative_count_ += (value ? 0 : -1);
     condition_.pop_back();
+
+    // Optimized above to avoid succeeded loop.
+    ////condition_.pop_back();
 }
 
-template <typename Stack>
-INLINE bool program<Stack>::
-is_balanced() const NOEXCEPT
+inline bool program::closed() const
 {
     return condition_.empty();
 }
 
-template <typename Stack>
-INLINE bool program<Stack>::
-is_succeess() const NOEXCEPT
+inline bool program::succeeded() const
 {
-    // Optimization changes O(n) search [for every operation] to O(1).
-    // bitslog.com/2017/04/17/new-quadratic-delays-in-bitcoin-scripts
-    return is_zero(negative_condition_count_);
-}
+    return negative_count_ == 0;
 
-template <typename Stack>
-INLINE bool program<Stack>::
-if_(const operation& op) const NOEXCEPT
-{
-    // Conditional op execution is not predicated on conditional stack.
-    return op.is_conditional() || is_succeess();
-}
-
-//  Accumulator.
-// ----------------------------------------------------------------------------
-
-// ****************************************************************************
-// CONSENSUS:
-// Satoshi compares the count to 200 with a composed postfix increment, which
-// makes the actual maximum 201, not the presumably-intended 200. The code was
-// later revised to make this explicit, by use of a prefix increment against a
-// limit of 201.
-// ****************************************************************************
-INLINE constexpr bool operation_count_exceeded(size_t count) NOEXCEPT
-{
-    return count > max_counted_ops;
-}
-
-template <typename Stack>
-INLINE bool program<Stack>::
-ops_increment(const operation& op) NOEXCEPT
-{
-    // Addition is safe due to script size constraint.
-    BC_ASSERT(!is_add_overflow(operation_count_, one));
-
-    if (operation::is_counted(op.code()))
-        ++operation_count_;
-
-    return operation_count_ <= max_counted_ops;
-}
-
-template <typename Stack>
-INLINE bool program<Stack>::
-ops_increment(size_t public_keys) NOEXCEPT
-{
-    // Addition is safe due to script size constraint.
-    BC_ASSERT(!is_add_overflow(operation_count_, public_keys));
-
-    operation_count_ += public_keys;
-    return !operation_count_exceeded(operation_count_);
-}
-
-// Signature validation helpers.
-// ----------------------------------------------------------------------------
-
-// Subscripts are referenced by script.offset mutable metadata. This allows for
-// efficient subscripting with no copying. However, concurrent execution of any
-// one input script instance is not thread safe (unnecessary scenario).
-template <typename Stack>
-inline bool program<Stack>::
-set_subscript(const op_iterator& op) NOEXCEPT
-{
-    // End is not reachable if op is an element of script_.
-    if (script_->ops().empty() || op == script_->ops().end())
-        return false;
-
-    // Advance the offset to the op following the found code separator.
-    // This is non-const because changes script state (despite being mutable).
-    script_->offset = std::next(op);
-    return true;
-}
-
-using strippers = std::vector<stripper, no_fill_allocator<stripper>>;
-inline strippers create_strip_ops(const chunk_xptrs& endorsements) NOEXCEPT
-{
-    strippers strip;
-
-    BC_PUSH_WARNING(NO_THROW_IN_NOEXCEPT)
-    strip.reserve(add1(endorsements.size()));
-
-    for (const auto& endorsement: endorsements)
-        strip.emplace_back(endorsement);
-
-    strip.emplace_back(opcode::codeseparator);
-    BC_POP_WARNING()
-
-    return strip;
-}
-
-// ****************************************************************************
-// CONSENSUS: Endorsement and code separator stripping are always performed in
-// conjunction and are limited to non-witness signature hash subscripts.
-// The order of operations is inconsequential, as they are all removed.
-// Subscripts are not evaluated, they are limited to signature hash creation.
-// ****************************************************************************
-template <typename Stack>
-inline script::cptr program<Stack>::
-subscript(const chunk_xptrs& endorsements) const NOEXCEPT
-{
-    // bip141: establishes the version property.
-    // bip143: op stripping is not applied to bip141 v0 scripts.
-    if (is_enabled(forks::bip143_rule) && version_ == script_version::zero)
-        return script_;
-
-    // Transform into a set of endorsement push ops and one op_codeseparator.
-    const auto strip = create_strip_ops(endorsements);
-    const auto stop = script_->ops().end();
-    const op_iterator offset{ script_->offset };
-
-    // If none of the strip ops are found, return the subscript.
-    // Prefail is not circumvented as subscript used only for signature hash.
-    if (!is_intersecting<operations>(offset, stop, strip))
-        return script_;
-
-    // Create new script from stripped copy of subscript operations.
-    // Prefail is not copied to the subscript, used only for signature hash.
-    return to_shared<script>(difference<operations>(offset, stop, strip));
-}
-
-// TODO: use sighash and key to generate signature in sign mode.
-template <typename Stack>
-inline bool program<Stack>::
-prepare(ec_signature& signature, const data_chunk&, hash_digest& hash,
-    const chunk_xptr& endorsement) const NOEXCEPT
-{
-    uint8_t flags;
-    data_slice distinguished;
-
-    // Parse Bitcoin endorsement into DER signature and sighash flags.
-    if (!parse_endorsement(flags, distinguished, *endorsement))
-        return false;
-
-    // Obtain the signature hash from subscript and sighash flags.
-    hash = signature_hash(*subscript({ endorsement }), flags);
-
-    // Parse DER signature into an EC signature (bip66 sets strict).
-    const auto bip66 = is_enabled(forks::bip66_rule);
-    return parse_signature(signature, distinguished, bip66);
-}
-
-// TODO: use sighash and key to generate signature in sign mode.
-template <typename Stack>
-inline bool program<Stack>::
-prepare(ec_signature& signature, const data_chunk&, hash_cache& cache,
-    uint8_t& flags, const data_chunk& endorsement, const script& sub) const NOEXCEPT
-{
-    data_slice distinguished;
-
-    // Parse Bitcoin endorsement into DER signature and sighash flags.
-    if (!parse_endorsement(flags, distinguished, endorsement))
-        return false;
-
-    // Obtain the signature hash from subscript and sighash flags.
-    signature_hash(cache, sub, flags);
-
-    // Parse DER signature into an EC signature (bip66 sets strict).
-    const auto bip66 = is_enabled(forks::bip66_rule);
-    return parse_signature(signature, distinguished, bip66);
-}
-
-// Signature hashing.
-// ----------------------------------------------------------------------------
-
-template <typename Stack>
-INLINE hash_digest program<Stack>::
-signature_hash(const script& sub, uint8_t flags) const NOEXCEPT
-{
-    // The bip141 fork establishes witness version, hashing is a distinct fork.
-    const auto bip143 = is_enabled(forks::bip143_rule);
-
-    // bip143: the method of signature hashing is changed for v0 scripts.
-    return transaction_.signature_hash(input_, sub, value_, flags, version_,
-        bip143);
-}
-
-// Caches signature hashes in a map against sighash flags.
-// Prevents recomputation in the common case where flags are the same.
-template <typename Stack>
-INLINE void program<Stack>::
-signature_hash(hash_cache& cache, const script& sub,
-    uint8_t flags) const NOEXCEPT
-{
-    BC_PUSH_WARNING(NO_THROW_IN_NOEXCEPT)
-    if (cache.find(flags) == cache.end())
-        cache.emplace(flags, signature_hash(sub, flags));
-    BC_POP_WARNING()
+    // Optimized above to avoid succeeded loop.
+    ////const auto is_true = [](bool value) { return value; };
+    ////return std::all_of(condition_.begin(), condition_.end(), true);
 }
 
 } // namespace machine

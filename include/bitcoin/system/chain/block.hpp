@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2022 libbitcoin developers (see AUTHORS)
+ * Copyright (c) 2011-2019 libbitcoin developers (see AUTHORS)
  *
  * This file is part of libbitcoin.
  *
@@ -19,172 +19,190 @@
 #ifndef LIBBITCOIN_SYSTEM_CHAIN_BLOCK_HPP
 #define LIBBITCOIN_SYSTEM_CHAIN_BLOCK_HPP
 
-#include <memory>
+#include <cstddef>
+#include <cstdint>
 #include <vector>
-#include <bitcoin/system/chain/context.hpp>
+#include <boost/optional.hpp>
+#include <bitcoin/system/chain/chain_state.hpp>
 #include <bitcoin/system/chain/header.hpp>
-#include <bitcoin/system/chain/input.hpp>
 #include <bitcoin/system/chain/transaction.hpp>
-#include <bitcoin/system/data/data.hpp>
 #include <bitcoin/system/define.hpp>
-#include <bitcoin/system/error/error.hpp>
-#include <bitcoin/system/math/math.hpp>
-#include <bitcoin/system/stream/stream.hpp>
+#include <bitcoin/system/error.hpp>
+#include <bitcoin/system/math/hash.hpp>
+#include <bitcoin/system/utility/asio.hpp>
+#include <bitcoin/system/utility/data.hpp>
+#include <bitcoin/system/utility/reader.hpp>
+#include <bitcoin/system/utility/thread.hpp>
+#include <bitcoin/system/utility/writer.hpp>
 
 namespace libbitcoin {
 namespace system {
+
+class settings;
 
 namespace chain {
 
 class BC_API block
 {
 public:
-    DEFAULT_COPY_MOVE_DESTRUCT(block);
+    typedef std::vector<block> list;
+    typedef std::vector<size_t> indexes;
 
-    typedef std::shared_ptr<const block> cptr;
+    // THIS IS FOR LIBRARY USE ONLY, DO NOT CREATE A DEPENDENCY ON IT.
+    struct validation
+    {
+        // Organize
+        asio::nanoseconds deserialize;
+        asio::nanoseconds check;
+        asio::nanoseconds associate;
 
-    /// Constructors.
-    /// -----------------------------------------------------------------------
+        // Validate
+        ////asio::nanoseconds deserialize;
+        asio::nanoseconds populate;
+        asio::nanoseconds accept;
+        asio::nanoseconds connect;
+        asio::nanoseconds candidate;
+        asio::nanoseconds confirm;
+        asio::nanoseconds catalog;
+        asio::nanoseconds filter;
 
-    /// Default block is an invalid object.
-    block() NOEXCEPT;
-    block(chain::header&& header, transactions&& txs) NOEXCEPT;
-    block(const chain::header& header, const transactions& txs) NOEXCEPT;
-    block(const chain::header::cptr& header,
-        const transactions_cptr& txs) NOEXCEPT;
+        float cache_efficiency;
+    };
 
-    block(const data_slice& data, bool witness) NOEXCEPT;
-    block(std::istream&& stream, bool witness) NOEXCEPT;
-    block(std::istream& stream, bool witness) NOEXCEPT;
-    block(reader&& source, bool witness) NOEXCEPT;
-    block(reader& source, bool witness) NOEXCEPT;
+    // Constructors.
+    //-------------------------------------------------------------------------
 
-    /// Operators.
-    /// -----------------------------------------------------------------------
+    block();
 
-    bool operator==(const block& other) const NOEXCEPT;
-    bool operator!=(const block& other) const NOEXCEPT;
+    block(block&& other);
+    block(const block& other);
 
-    /// Serialization.
-    /// -----------------------------------------------------------------------
+    block(chain::header&& header, transaction::list&& transactions);
+    block(const chain::header& header, const transaction::list& transactions);
 
-    data_chunk to_data(bool witness) const NOEXCEPT;
-    void to_data(std::ostream& stream, bool witness) const NOEXCEPT;
-    void to_data(writer& sink, bool witness) const NOEXCEPT;
+    // Operators.
+    //-------------------------------------------------------------------------
 
-    /// Properties.
-    /// -----------------------------------------------------------------------
+    /// This class is move assignable but NOT copy assignable (performance).
+    block& operator=(block&& other);
+    block& operator=(const block& other) = delete;
 
-    /// Native properties.
-    bool is_valid() const NOEXCEPT;
-    const chain::header& header() const NOEXCEPT;
-    const chain::header::cptr header_ptr() const NOEXCEPT;
-    const inputs_cptr inputs_ptr() const NOEXCEPT;
-    const transactions_cptr& transactions_ptr() const NOEXCEPT;
-    hashes transaction_hashes(bool witness) const NOEXCEPT;
+    bool operator==(const block& other) const;
+    bool operator!=(const block& other) const;
 
-    /// Computed properties.
-    size_t weight() const NOEXCEPT;
-    uint64_t fees() const NOEXCEPT;
-    uint64_t claim() const NOEXCEPT;
-    hash_digest hash() const NOEXCEPT;
-    bool is_segregated() const NOEXCEPT;
-    size_t serialized_size(bool witness) const NOEXCEPT;
-    size_t signature_operations(bool bip16, bool bip141) const NOEXCEPT;
+    // Deserialization.
+    //-------------------------------------------------------------------------
 
-    /// Validation.
-    /// -----------------------------------------------------------------------
+    static block factory(const data_chunk& data, bool witness=false);
+    static block factory(std::istream& stream, bool witness=false);
+    static block factory(reader& source, bool witness=false);
 
-    /// Consensus checks (no DoS guards for block sync without headers first).
-    code check() const NOEXCEPT;
-    code check(const context& ctx) const NOEXCEPT;
-    code accept(const context& ctx, size_t subsidy_interval,
-        uint64_t initial_subsidy) const NOEXCEPT;
-    code connect(const context& ctx) const NOEXCEPT;
-    code confirm(const context& ctx) const NOEXCEPT;
+    bool from_data(const data_chunk& data, bool witness=false);
+    bool from_data(std::istream& stream, bool witness=false);
+    bool from_data(reader& source, bool witness=false);
 
-    /// Populate previous output metadata internal to the block.
-    /// Does not populate forward references (consensus limited).
-    void populate() const NOEXCEPT;
+    bool is_valid() const;
+
+    // Serialization.
+    //-------------------------------------------------------------------------
+
+    data_chunk to_data(bool witness=false) const;
+    void to_data(std::ostream& stream, bool witness=false) const;
+    void to_data(writer& sink, bool witness=false) const;
+    hash_list to_hashes(bool witness=false) const;
+
+    // Properties (size, accessors, cache).
+    //-------------------------------------------------------------------------
+
+    size_t serialized_size(bool witness=false) const;
+
+    const chain::header& header() const;
+    void set_header(const chain::header& value);
+    void set_header(chain::header&& value);
+
+    const transaction::list& transactions() const;
+    void set_transactions(const transaction::list& value);
+    void set_transactions(transaction::list&& value);
+
+    hash_digest hash() const;
+
+    // Utilities.
+    //-------------------------------------------------------------------------
+
+    static size_t locator_size(size_t top);
+    static indexes locator_heights(size_t top);
+
+    /// Clear witness from all inputs (does not change default hash).
+    void strip_witness();
+
+    // Validation.
+    //-------------------------------------------------------------------------
+
+    static uint64_t subsidy(size_t height, uint64_t subsidy_interval,
+        uint64_t initial_block_subsidy_satoshi, bool bip42);
+
+    uint64_t fees() const;
+    uint64_t claim() const;
+    uint64_t reward(size_t height, uint64_t subsidy_interval,
+        uint64_t initial_block_subsidy_satoshi, bool bip42) const;
+    hash_digest generate_merkle_root(bool witness=false) const;
+    size_t signature_operations() const;
+    size_t signature_operations(bool bip16, bool bip141) const;
+    size_t total_non_coinbase_inputs() const;
+    size_t total_inputs() const;
+    size_t weight() const;
+
+    bool is_extra_coinbases() const;
+    bool is_final(size_t height, uint32_t block_time) const;
+    bool is_distinct_transaction_set() const;
+    bool is_valid_coinbase_claim(size_t height, uint64_t subsidy_interval,
+        uint64_t initial_block_subsidy_satoshi, bool bip42) const;
+    bool is_valid_coinbase_script(size_t height) const;
+    bool is_valid_witness_commitment() const;
+    bool is_forward_reference() const;
+    bool is_internal_double_spend() const;
+    bool is_valid_merkle_root() const;
+    bool is_segregated() const;
+
+    code check(uint64_t max_money, uint32_t timestamp_limit_seconds,
+        uint32_t proof_of_work_limit, bool scrypt=false,
+        bool header=true) const;
+    code check_transactions(uint64_t max_money) const;
+    code accept(const system::settings& settings, bool transactions=true,
+        bool header=true) const;
+    code accept(const chain_state& state, const system::settings& settings,
+        bool transactions=true, bool header=true) const;
+    code accept_transactions(const chain_state& state) const;
+    code connect() const;
+    code connect(const chain_state& state) const;
+    code connect_transactions(const chain_state& state) const;
+
+    // THIS IS FOR LIBRARY USE ONLY, DO NOT CREATE A DEPENDENCY ON IT.
+    mutable validation metadata;
 
 protected:
-    block(const chain::header::cptr& header,
-        const chain::transactions_cptr& txs, bool valid) NOEXCEPT;
-
-    /// Check (context free).
-    /// -----------------------------------------------------------------------
-
-    bool is_empty() const NOEXCEPT;
-    bool is_oversized() const NOEXCEPT;
-    bool is_first_non_coinbase() const NOEXCEPT;
-    bool is_extra_coinbases() const NOEXCEPT;
-    bool is_forward_reference() const NOEXCEPT;
-    bool is_internal_double_spend() const NOEXCEPT;
-    bool is_invalid_merkle_root() const NOEXCEPT;
-
-    /// Accept (contextual).
-    /// -----------------------------------------------------------------------
-
-    bool is_overweight() const NOEXCEPT;
-    bool is_invalid_coinbase_script(size_t height) const NOEXCEPT;
-    bool is_hash_limit_exceeded() const NOEXCEPT;
-    bool is_invalid_witness_commitment() const NOEXCEPT;
-
-    /// Requires prevouts (value).
-    bool is_overspent(size_t height, uint64_t subsidy_interval,
-        uint64_t initial_block_subsidy_satoshi, bool bip42) const NOEXCEPT;
-
-    /// Assumes coinbase if prevout not populated (returns only legacy sigops).
-    bool is_signature_operations_limited(bool bip16,
-        bool bip141) const NOEXCEPT;
-
-    /// Requires input.metadata.spent (prevout confirmation).
-    bool is_unspent_coinbase_collision() const NOEXCEPT;
+    void reset();
 
 private:
-    static block from_data(reader& source, bool witness) NOEXCEPT;
+    typedef boost::optional<size_t> optional_size;
 
-    // context free
-    hash_digest generate_merkle_root(bool witness) const NOEXCEPT;
+    optional_size total_inputs_cache() const;
+    optional_size non_coinbase_inputs_cache() const;
 
-    // contextual
-    size_t non_coinbase_inputs() const NOEXCEPT;
-    uint64_t reward(size_t height, uint64_t subsidy_interval,
-        uint64_t initial_block_subsidy_satoshi, bool bip42) const NOEXCEPT;
+    chain::header header_;
+    transaction::list transactions_;
 
-    // delegated
-    code check_transactions() const NOEXCEPT;
-    code check_transactions(const context& ctx) const NOEXCEPT;
-    code accept_transactions(const context& ctx) const NOEXCEPT;
-    code connect_transactions(const context& ctx) const NOEXCEPT;
-    code confirm_transactions(const context& ctx) const NOEXCEPT;
-
-    // Block should be stored as shared (adds 16 bytes).
-    // copy: 4 * 64 + 1 = 33 bytes (vs. 16 when shared).
-    chain::header::cptr header_;
-    chain::transactions_cptr txs_;
-    bool valid_;
+    // These share a mutext as they are not expected to contend.
+    mutable boost::optional<bool> segregated_;
+    mutable optional_size total_inputs_;
+    mutable optional_size non_coinbase_inputs_;
+    mutable boost::optional<size_t> base_size_;
+    mutable boost::optional<size_t> total_size_;
+    mutable upgrade_mutex mutex_;
 };
-
-typedef std::vector<block> blocks;
-
-DECLARE_JSON_VALUE_CONVERTORS(block);
-DECLARE_JSON_VALUE_CONVERTORS(block::cptr);
 
 } // namespace chain
 } // namespace system
 } // namespace libbitcoin
-
-namespace std
-{
-template<>
-struct hash<bc::system::chain::block>
-{
-    size_t operator()(const bc::system::chain::block& value) const NOEXCEPT
-    {
-        return std::hash<bc::system::hash_digest>{}(value.hash());
-    }
-};
-} // namespace std
 
 #endif

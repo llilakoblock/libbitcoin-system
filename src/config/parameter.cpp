@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2022 libbitcoin developers (see AUTHORS)
+ * Copyright (c) 2011-2019 libbitcoin developers (see AUTHORS)
  *
  * This file is part of libbitcoin.
  *
@@ -18,17 +18,26 @@
  */
 #include <bitcoin/system/config/parameter.hpp>
 
-#include <bitcoin/system/data/data.hpp>
+#include <boost/program_options.hpp>
+#include <bitcoin/system/utility/collection.hpp>
+#include <bitcoin/system/utility/string.hpp>
 
+namespace po = boost::program_options;
 using namespace libbitcoin::system::config;
+
 const int parameter::not_positional = -1;
 const char parameter::no_short_name = 0x00;
 const char parameter::option_prefix_char = '-';
 
+parameter::~parameter()
+{
+}
+
+// 100% component coverage, common scenarios.
 // A required argument may only be preceded by required arguments.
 // Requiredness may be in error if the metadata is inconsistent.
-void parameter::initialize(const option_metadata& option,
-    const argument_list& arguments) NOEXCEPT
+void parameter::initialize(const po::option_description& option,
+    const argument_list& arguments)
 {
     set_position(position(option, arguments));
     set_args_limit(arguments_limit(position(), option, arguments));
@@ -40,24 +49,31 @@ void parameter::initialize(const option_metadata& option,
     set_format_parameter(option.format_parameter());
 }
 
-int parameter::position(const option_metadata& option,
-    const argument_list& arguments) const NOEXCEPT
+// 100% component coverage, all three scenarios (long, short, both)
+int parameter::position(const po::option_description& option,
+    const argument_list& arguments) const
 {
-    return static_cast<int>(find_pair_position(arguments, option.long_name()));
+    return find_pair_position(arguments, option.long_name());
 }
 
-char parameter::short_name(const option_metadata& option) const NOEXCEPT
+// 100% unit coverage, all three scenarios (long, short, both)
+char parameter::short_name(const po::option_description& option) const
 {
-    std::string name{ split(option.format_name()).front() };
-    const auto is_short_name = 
-        name[0] == option_prefix_char &&
+    // This call requires boost 1.50, don't use it.
+    //auto name = option.canonical_display_name(
+    //    search_options::dashed_short_prefer_short);
+
+    // This is a substitute that allows us to use boost 1.49 for libbitcoin.
+    const auto name = split(option.format_name()).front();
+    const auto is_short_name = name[0] == option_prefix_char &&
         name[1] != option_prefix_char;
 
     return is_short_name ? name[1] : no_short_name;
 }
 
-unsigned parameter::arguments_limit(int position, const option_metadata& option,
-    const argument_list& arguments) const NOEXCEPT
+// 100% component coverage
+unsigned parameter::arguments_limit(int position,
+    const po::option_description& option, const argument_list& arguments) const
 {
     if (position == parameter::not_positional)
         return option.semantic()->max_tokens();

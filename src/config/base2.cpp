@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2022 libbitcoin developers (see AUTHORS)
+ * Copyright (c) 2011-2019 libbitcoin developers (see AUTHORS)
  *
  * This file is part of libbitcoin.
  *
@@ -18,56 +18,64 @@
  */
 #include <bitcoin/system/config/base2.hpp>
 
-#include <iostream>
 #include <sstream>
 #include <string>
-#include <utility>
-#include <bitcoin/system/stream/stream.hpp>
+#include <boost/program_options.hpp>
+#include <bitcoin/system/utility/binary.hpp>
 
 namespace libbitcoin {
 namespace system {
 namespace config {
 
-base2::base2() NOEXCEPT
+base2::base2()
 {
 }
 
-base2::base2(binary&& value) NOEXCEPT
-  : value_(std::move(value))
+base2::base2(const std::string& binary)
 {
+    std::stringstream(binary) >> *this;
 }
 
-base2::base2(const binary& value) NOEXCEPT
+base2::base2(const binary& value)
   : value_(value)
 {
 }
 
-base2::base2(const std::string& binary) THROWS
+base2::base2(const base2& other)
+  : base2(other.value_)
 {
-    std::istringstream(binary) >> *this;
 }
 
-base2::operator const binary&() const NOEXCEPT
+size_t base2::size() const
+{
+    return value_.size();
+}
+
+base2::operator const binary&() const
 {
     return value_;
 }
 
-std::istream& operator>>(std::istream& stream, base2& argument) THROWS
+std::istream& operator>>(std::istream& input, base2& argument)
 {
     std::string binary;
-    stream >> binary;
+    input >> binary;
 
     if (!binary::is_base2(binary))
-        throw istream_exception(binary);
+    {
+        using namespace boost::program_options;
+        BOOST_THROW_EXCEPTION(invalid_option_value(binary));
+    }
 
-    std::istringstream(binary) >> argument.value_;
-    return stream;
+    std::stringstream(binary) >> argument.value_;
+
+    return input;
 }
 
-std::ostream& operator<<(std::ostream& stream, const base2& argument) NOEXCEPT
+std::ostream& operator<<(std::ostream& output, const base2& argument)
 {
-    stream << argument.value_;
-    return stream;
+    output << argument.value_;
+    return output;
 }
 
 } // namespace config

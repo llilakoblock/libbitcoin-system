@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2022 libbitcoin developers (see AUTHORS)
+ * Copyright (c) 2011-2019 libbitcoin developers (see AUTHORS)
  *
  * This file is part of libbitcoin.
  *
@@ -18,15 +18,14 @@
  */
 #include <bitcoin/system/config/point.hpp>
 
-#include <iostream>
 #include <sstream>
 #include <string>
 #include <utility>
-#include <bitcoin/system/chain/chain.hpp>
+#include <boost/program_options.hpp>
+#include <bitcoin/system/chain/output_point.hpp>
 #include <bitcoin/system/config/hash256.hpp>
-#include <bitcoin/system/data/data.hpp>
-#include <bitcoin/system/hash/hash.hpp>
-#include <bitcoin/system/serial/serial.hpp>
+#include <bitcoin/system/math/hash.hpp>
+#include <bitcoin/system/utility/string.hpp>
 
 namespace libbitcoin {
 namespace system {
@@ -36,70 +35,76 @@ using namespace boost::program_options;
 
 const std::string point::delimiter = ":";
 
-// Point format is currently private to bx:
-// "txhash:index"
-
-static bool decode_point(chain::point& point,
-    const std::string& tuple) THROWS
+// Point format is currently private to bx.
+static bool decode_point(chain::output_point& point, const std::string& tuple)
 {
     uint32_t index;
     const auto tokens = split(tuple, point::delimiter);
-    if (tokens.size() != 2 || !deserialize(index, tokens[1]))
+    if (tokens.size() != 2 || !deserialize(index, tokens[1], true))
         return false;
 
-    // Throws istream_exception.
-    point = chain::point
-    {
-        hash256{ tokens[0] },
-        index
-    };
+    // Validate and deserialize the transaction hash.
+    const hash256 digest(tokens[0]);
+    const hash_digest& hash = digest;
+    hash_digest copy;
 
+    // Copy the input point values.
+    std::copy(hash.begin(), hash.end(), copy.begin());
+    point.set_hash(std::move(copy));
+    point.set_index(index);
     return true;
 }
 
-static std::string encode_point(const chain::point& point) NOEXCEPT
+// Point format is currently private to bx.
+static std::string encode_point(const chain::output_point& point)
 {
-    std::ostringstream result;
+    std::stringstream result;
     result << hash256(point.hash()) << point::delimiter << point.index();
     return result.str();
 }
 
-point::point() NOEXCEPT
-  : chain::point()
+point::point()
+  : value_()
 {
 }
 
-point::point(chain::point&& value) NOEXCEPT
-  : chain::point(std::move(value))
+point::point(const std::string& tuple)
+{
+    std::stringstream(tuple) >> *this;
+}
+
+point::point(const chain::output_point& value)
+  : value_(value)
 {
 }
 
-point::point(const chain::point& value) NOEXCEPT
-  : chain::point(value)
+point::point(const point& other)
+  : point(other.value_)
 {
 }
 
-point::point(const std::string& tuple) THROWS
-  : point()
+point::operator const chain::output_point&() const
 {
-    std::istringstream(tuple) >> *this;
+    return value_;
 }
 
-std::istream& operator>>(std::istream& stream, point& argument) THROWS
+std::istream& operator>>(std::istream& input, point& argument)
 {
     std::string tuple;
-    stream >> tuple;
+    input >> tuple;
 
-    if (!decode_point(argument, tuple))
-        throw istream_exception(tuple);
+    if (!decode_point(argument.value_, tuple))
+    {
+        BOOST_THROW_EXCEPTION(invalid_option_value(tuple));
+    }
 
-    return stream;
+    return input;
 }
 
-std::ostream& operator<<(std::ostream& stream, const point& argument) NOEXCEPT
+std::ostream& operator<<(std::ostream& output, const point& argument)
 {
-    stream << encode_point(argument);
-    return stream;
+    output << encode_point(argument.value_);
+    return output;
 }
 
 } // namespace config

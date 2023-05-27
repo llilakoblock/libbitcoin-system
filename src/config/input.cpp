@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2022 libbitcoin developers (see AUTHORS)
+ * Copyright (c) 2011-2019 libbitcoin developers (see AUTHORS)
  *
  * This file is part of libbitcoin.
  *
@@ -18,14 +18,13 @@
  */
 #include <bitcoin/system/config/input.hpp>
 
-#include <iostream>
 #include <sstream>
 #include <string>
-#include <utility>
+#include <boost/program_options.hpp>
 #include <bitcoin/system/chain/input.hpp>
+#include <bitcoin/system/chain/input_point.hpp>
 #include <bitcoin/system/config/point.hpp>
-#include <bitcoin/system/config/script.hpp>
-#include <bitcoin/system/serial/deserialize.hpp>
+#include <bitcoin/system/utility/string.hpp>
 
 namespace libbitcoin {
 namespace system {
@@ -33,75 +32,85 @@ namespace config {
 
 using namespace boost::program_options;
 
-// Input format is currently private to bx:
-// "script:txhash:index:sequence=max_input_sequence"
-
-static bool decode_input(chain::input& input,
-    const std::string& tuple) THROWS
+// input is currently a private encoding in bx.
+static bool decode_input(chain::input& input, const std::string& tuple)
 {
     const auto tokens = split(tuple, point::delimiter);
-    if (tokens.size() != 3 && tokens.size() != 4)
+    if (tokens.size() != 2 && tokens.size() != 3)
         return false;
 
-    auto sequence = chain::max_input_sequence;
-    if (tokens.size() == 4 && !deserialize(sequence, tokens[3]))
-        return false;
+    input.set_sequence(max_input_sequence);
+    input.set_previous_output(point(tokens[0] + ":" + tokens[1]));
 
-    // Throws istream_exception.
-    input = chain::input
+    if (tokens.size() == 3)
     {
-        point{ tokens[1] + point::delimiter + tokens[2] },
-        script{ tokens[0] },
-        sequence
-    };
+        uint32_t value;
+        if (!deserialize(value, tokens[2], true))
+            return false;
+
+        input.set_sequence(value);
+    }
 
     return true;
 }
 
-static std::string encode_input(const chain::input& input) NOEXCEPT
+// input is currently a private encoding in bx.
+static std::string encode_input(const chain::input& input)
 {
-    std::ostringstream result;
-    result << script(input.script()) << point(input.point())
-        << point::delimiter << input.sequence();
+    std::stringstream result;
+    result << point(input.previous_output()) << point::delimiter
+        << input.sequence();
+
     return result.str();
 }
 
-input::input() NOEXCEPT
-  : chain::input()
+input::input()
+  : value_()
 {
 }
 
-input::input(chain::input&& value) NOEXCEPT
-  : chain::input(std::move(value))
+input::input(const std::string& tuple)
+{
+    std::stringstream(tuple) >> *this;
+}
+
+input::input(const chain::input& value)
+  : value_(value)
 {
 }
 
-input::input(const chain::input& value) NOEXCEPT
-  : chain::input(value)
+input::input(const input& other)
+  : input(other.value_)
 {
 }
 
-input::input(const std::string& tuple) THROWS
-  : input()
+input::input(const chain::input_point& value)
+  : value_({value, {}, max_input_sequence})
 {
-    std::istringstream(tuple) >> *this;
 }
 
-std::istream& operator>>(std::istream& stream, input& argument) THROWS
+input::operator const chain::input&() const
+{
+    return value_;
+}
+
+std::istream& operator>>(std::istream& stream, input& argument)
 {
     std::string tuple;
     stream >> tuple;
 
-    if (!decode_input(argument, tuple))
-        throw istream_exception(tuple);
+    if (!decode_input(argument.value_, tuple))
+    {
+        BOOST_THROW_EXCEPTION(invalid_option_value(tuple));
+    }
 
     return stream;
 }
 
-std::ostream& operator<<(std::ostream& stream, const input& argument) NOEXCEPT
+std::ostream& operator<<(std::ostream& output, const input& argument)
 {
-    stream << encode_input(argument);
-    return stream;
+    output << encode_input(argument.value_);
+    return output;
 }
 
 } // namespace config

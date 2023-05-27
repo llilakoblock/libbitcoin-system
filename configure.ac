@@ -37,13 +37,13 @@ AM_PROG_AR
 
 # Initialize libtool.
 LT_PREREQ(2.4.2)
-
-# Enable shared libraries if available, and static if they don't conflict.
 LT_INIT
-AC_SUBST([LIBTOOL_DEPS])
 
 # Determine C++ compiler to use.
 AC_PROG_CXX
+
+# Enable shared libraries if available, and static if they don't conflict.
+AC_PROG_LIBTOOL
 
 # Enable sed for substitution.
 AC_PROG_SED
@@ -69,9 +69,9 @@ AC_ARG_VAR([CC], "C compiler to use, such as gcc or clang")
 AC_ARG_VAR([CXX], "C++ compiler to use, such as g++ or clang++")
 AC_ARG_VAR([PKG_CONFIG_PATH], "Additional directories for package discovery.")
 
-# Check for baseline language coverage in the compiler for the C++20 standard.
+# Check for baseline language coverage in the compiler for the C++11 standard.
 #------------------------------------------------------------------------------
-AX_CXX_COMPILE_STDCXX([20], [noext], [mandatory])
+AX_CXX_COMPILE_STDCXX_11([noext], [mandatory])
 
 
 # Process options.
@@ -121,46 +121,6 @@ AC_MSG_RESULT([$with_icu])
 AS_CASE([${with_icu}], [yes], AC_DEFINE([BOOST_HAS_ICU]))
 AS_CASE([${with_icu}], [yes], AC_SUBST([icu], [-DWITH_ICU]))
 
-# Implement --enable-avx2.
-#------------------------------------------------------------------------------
-AC_MSG_CHECKING([--enable-avx2 option])
-AC_ARG_ENABLE([avx2],
-    AS_HELP_STRING([--enable-avx2],
-        [Compile with avx2 intrinsics (specifically -mavx -mavx2). @<:@default=no@:>@]),
-    [enable_avx2=$enableval],
-    [enable_avx2=no])
-AC_MSG_RESULT([$enable_avx2])
-
-# Implement --enable-avx512.
-#------------------------------------------------------------------------------
-AC_MSG_CHECKING([--enable-avx512 option])
-AC_ARG_ENABLE([avx512],
-    AS_HELP_STRING([--enable-avx512],
-        [Compile with avx512 intrinsics (specifically -mavx512bw -mavx512f). @<:@default=no@:>@]),
-    [enable_avx512=$enableval],
-    [enable_avx512=no])
-AC_MSG_RESULT([$enable_avx512])
-
-# Implement --enable-sse4.
-#------------------------------------------------------------------------------
-AC_MSG_CHECKING([--enable-sse4 option])
-AC_ARG_ENABLE([sse4],
-    AS_HELP_STRING([--enable-sse4],
-        [Compile with sse4 intrinsics (specifically -msse4.1). @<:@default=no@:>@]),
-    [enable_sse4=$enableval],
-    [enable_sse4=no])
-AC_MSG_RESULT([$enable_sse4])
-
-# Implement --enable-shani.
-#------------------------------------------------------------------------------
-AC_MSG_CHECKING([--enable-shani option])
-AC_ARG_ENABLE([shani],
-    AS_HELP_STRING([--enable-shani],
-        [Compile with sha native intrinsics (specifically -msse4 -msha) @<:@default=no@:>@]),
-    [enable_shani=$enableval],
-    [enable_shani=no])
-AC_MSG_RESULT([$enable_shani])
-
 # Implement --enable-ndebug and define NDEBUG.
 #------------------------------------------------------------------------------
 AC_MSG_CHECKING([--enable-ndebug option])
@@ -187,182 +147,19 @@ AC_ARG_ENABLE([isystem],
 AC_MSG_RESULT([$enable_isystem])
 
 
-# Set flags.
-#==============================================================================
-# Require c++20 for all c++ products.
-#------------------------------------------------------------------------------
-AS_CASE([${CC}], [*],
-    [AX_CHECK_COMPILE_FLAG([-std=c++20],
-        [CXXFLAGS="$CXXFLAGS -std=c++20"])])
-
-# Warn on all stuff.
-#------------------------------------------------------------------------------
-AS_CASE([${CC}], [*],
-    [AX_CHECK_COMPILE_FLAG([-Wall],
-        [CFLAGS="$CFLAGS -Wall"])])
-
-# Warn on all stuff.
-#------------------------------------------------------------------------------
-AS_CASE([${CC}], [*],
-    [AX_CHECK_COMPILE_FLAG([-Wall],
-        [CXXFLAGS="$CXXFLAGS -Wall"])])
-
-# Warn on extra stuff.
-#------------------------------------------------------------------------------
-AS_CASE([${CC}], [*],
-    [AX_CHECK_COMPILE_FLAG([-Wextra],
-        [CFLAGS="$CFLAGS -Wextra"])])
-
-# Warn on extra stuff.
-#------------------------------------------------------------------------------
-AS_CASE([${CC}], [*],
-    [AX_CHECK_COMPILE_FLAG([-Wextra],
-        [CXXFLAGS="$CXXFLAGS -Wextra"])])
-
-# Disallow warning on style order of declarations.
-#------------------------------------------------------------------------------
-AS_CASE([${CC}], [*],
-    [AX_CHECK_COMPILE_FLAG([-Wno-reorder],
-        [CXXFLAGS="$CXXFLAGS -Wno-reorder"])])
-
-# Suppress warning for incomplete field initialization.
-#------------------------------------------------------------------------------
-AS_CASE([${CC}], [*],
-    [AX_CHECK_COMPILE_FLAG([-Wno-missing-field-initializers],
-        [CXXFLAGS="$CXXFLAGS -Wno-missing-field-initializers"])])
-
-# Conform to style.
-#------------------------------------------------------------------------------
-AS_CASE([${CC}], [*],
-    [AX_CHECK_COMPILE_FLAG([-Wno-missing-braces],
-        [CXXFLAGS="$CXXFLAGS -Wno-missing-braces"])])
-
-# Ignore comments within comments or commenting of backslash extended lines.
-#------------------------------------------------------------------------------
-AS_CASE([${CC}], [*],
-    [AX_CHECK_COMPILE_FLAG([-Wno-comment],
-        [CXXFLAGS="$CXXFLAGS -Wno-comment"])])
-
-# Suppress warning for copy of implicitly generated copy constructor.
-#------------------------------------------------------------------------------
-AS_CASE([${CC}], [*],
-    [AX_CHECK_COMPILE_FLAG([-Wno-deprecated-copy],
-        [CXXFLAGS="$CXXFLAGS -Wno-deprecated-copy"])])
-
-# Conflict in stdlib under clang. Enabled in clang only.
-#------------------------------------------------------------------------------
-AS_CASE([${CC}], [*clang*],
-    [AX_CHECK_COMPILE_FLAG([-Wno-mismatched-tags],
-        [CXXFLAGS="$CXXFLAGS -Wno-mismatched-tags"])])
-
-# Protect stack.
-#------------------------------------------------------------------------------
-AS_CASE([${CC}], [*],
-    [AX_CHECK_LINK_FLAG([-fstack-protector],
-        [LDFLAGS="$LDFLAGS -fstack-protector"])])
-
-# Protect stack comprehensively.
-#------------------------------------------------------------------------------
-AS_CASE([${CC}], [*],
-    [AX_CHECK_LINK_FLAG([-fstack-protector-all],
-        [LDFLAGS="$LDFLAGS -fstack-protector-all"])])
-
-# Allow use of C99 'long long' type.
-#------------------------------------------------------------------------------
-AS_CASE([${CC}], [*],
-    [AX_CHECK_COMPILE_FLAG([-Wno-long-long],
-        [CFLAGS="$CFLAGS -Wno-long-long"])])
-
-# Limit delays and warnings. Enabled in gcc only.
-#------------------------------------------------------------------------------
-AS_CASE([${CC}], [*gcc*],
-    [AX_CHECK_COMPILE_FLAG([-fno-var-tracking-assignments],
-        [CXXFLAGS="$CXXFLAGS -fno-var-tracking-assignments"])])
-
-
-# Set flags for compound flags.
-#==============================================================================
-AS_IF([test x${enable_avx2} != "xno"],
-    [AX_CHECK_COMPILE_FLAG([-mavx -mavx2],
-        [CXXFLAGS="$CXXFLAGS -mavx -mavx2";
-         AC_DEFINE([HAVE_AVX2])],
-        [AC_MSG_ERROR([-mavx -mavx2 not supported.])],
-        [],
-        [AC_LANG_PROGRAM(
-          [[
-            #include <stdint.h>
-            #include <immintrin.h>
-          ]],
-          [[
-            __m256i a = _mm256_set_epi32(8, 7, 6, 5, 4, 3, 2, 1);
-            return _mm256_extract_epi32(_mm256_slli_epi64(a, 2), 5);
-          ]])])])
-
-AS_IF([test x${enable_avx512} != "xno"],
-    [AX_CHECK_COMPILE_FLAG([-mavx512f -mavx512bw],
-        [CXXFLAGS="$CXXFLAGS -mavx512f -mavx512bw";
-         AC_DEFINE([HAVE_AVX512])],
-        [AC_MSG_ERROR([-mavx512f -mavx512bw not supported.])],
-        [],
-        [AC_LANG_PROGRAM(
-          [[
-            #include <stdint.h>
-            #include <immintrin.h>
-          ]],
-          [[
-            __m512i a = _mm512_set_epi32(16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1);
-            return _mm_extract_epi32(_mm512_extracti32x4_epi32(_mm512_slli_epi64(a, 2), 2), 1);
-          ]])])])
-
-AS_IF([test x${enable_shani} != "xno"],
-    [AX_CHECK_COMPILE_FLAG([-msse4 -msha],
-        [CXXFLAGS="$CXXFLAGS -msse4 -msha";
-         AC_DEFINE([HAVE_SHANI])],
-        [AC_MSG_ERROR([-msse4 -msha not supported.])],
-        [],
-        [AC_LANG_PROGRAM(
-          [[
-            #include <stdint.h>
-            #include <immintrin.h>
-          ]],
-          [[
-            __m128i a = _mm_set1_epi32(0);
-            __m128i b = _mm_set1_epi32(15);
-            __m128i k = _mm_set1_epi32(31);
-            return _mm_extract_epi32(_mm_sha256msg2_epu32(_mm_sha256msg1_epu32(_mm_sha256rnds2_epu32(a, b, k), b), a), 2);
-          ]])])])
-
-AS_IF([test x${enable_sse4} != "xno"],
-    [AX_CHECK_COMPILE_FLAG([-msse4.1],
-        [CXXFLAGS="$CXXFLAGS -msse4.1";
-         AC_DEFINE([HAVE_SSE4])],
-        [AC_MSG_ERROR([-msse4.1 not supported.])],
-        [],
-        [AC_LANG_PROGRAM(
-          [[
-            #include <stdint.h>
-            #include <immintrin.h>
-          ]],
-          [[
-            __m128i a = _mm_set1_epi32(0);
-            __m128i b = _mm_set1_epi32(15);
-            return _mm_extract_epi32(_mm_add_epi64(a, b), 2);
-          ]])])])
-
-
 # Check dependencies.
 #==============================================================================
-# Require Boost of at least version 1.76.0 and output ${boost_CPPFLAGS/LDFLAGS}.
+# Require Boost of at least version 1.72.0 and output ${boost_CPPFLAGS/LDFLAGS}.
 #------------------------------------------------------------------------------
 AS_CASE([${CC}], [*],
-    [AX_BOOST_BASE([1.76.0],
+    [AX_BOOST_BASE([1.72.0],
         [AC_SUBST([boost_CPPFLAGS], [${BOOST_CPPFLAGS}])
          AC_SUBST([boost_ISYS_CPPFLAGS], [`echo ${BOOST_CPPFLAGS} | $SED s/^-I/-isystem/g | $SED s/' -I'/' -isystem'/g`])
          AC_SUBST([boost_LDFLAGS], [${BOOST_LDFLAGS}])
          AC_MSG_NOTICE([boost_CPPFLAGS : ${boost_CPPFLAGS}])
          AC_MSG_NOTICE([boost_ISYS_CPPFLAGS : ${boost_ISYS_CPPFLAGS}])
          AC_MSG_NOTICE([boost_LDFLAGS : ${boost_LDFLAGS}])],
-        [AC_MSG_ERROR([Boost 1.76.0 or later is required but was not found.])])])
+        [AC_MSG_ERROR([Boost 1.72.0 or later is required but was not found.])])])
 
 AS_CASE([${enable_isystem}],[yes],
     [AC_SUBST([boost_BUILD_CPPFLAGS], [${boost_ISYS_CPPFLAGS}])],
@@ -374,21 +171,37 @@ AX_BOOST_CHRONO
 AC_SUBST([boost_chrono_LIBS], [${BOOST_CHRONO_LIB}])
 AC_MSG_NOTICE([boost_chrono_LIBS : ${boost_chrono_LIBS}])
 
+AX_BOOST_DATE_TIME
+AC_SUBST([boost_date_time_LIBS], [${BOOST_DATE_TIME_LIB}])
+AC_MSG_NOTICE([boost_date_time_LIBS : ${boost_date_time_LIBS}])
+
+AX_BOOST_FILESYSTEM
+AC_SUBST([boost_filesystem_LIBS], [${BOOST_FILESYSTEM_LIB}])
+AC_MSG_NOTICE([boost_filesystem_LIBS : ${boost_filesystem_LIBS}])
+
 AX_BOOST_IOSTREAMS
 AC_SUBST([boost_iostreams_LIBS], [${BOOST_IOSTREAMS_LIB}])
 AC_MSG_NOTICE([boost_iostreams_LIBS : ${boost_iostreams_LIBS}])
-
-AX_BOOST_JSON
-AC_SUBST([boost_json_LIBS], [${BOOST_JSON_LIB}])
-AC_MSG_NOTICE([boost_json_LIBS : ${boost_json_LIBS}])
 
 AX_BOOST_LOCALE
 AC_SUBST([boost_locale_LIBS], [${BOOST_LOCALE_LIB}])
 AC_MSG_NOTICE([boost_locale_LIBS : ${boost_locale_LIBS}])
 
+AX_BOOST_LOG_SETUP
+AC_SUBST([boost_log_setup_LIBS], [${BOOST_LOG_SETUP_LIB}])
+AC_MSG_NOTICE([boost_log_setup_LIBS : ${boost_log_setup_LIBS}])
+
+AX_BOOST_LOG
+AC_SUBST([boost_log_LIBS], [${BOOST_LOG_LIB}])
+AC_MSG_NOTICE([boost_log_LIBS : ${boost_log_LIBS}])
+
 AX_BOOST_PROGRAM_OPTIONS
 AC_SUBST([boost_program_options_LIBS], [${BOOST_PROGRAM_OPTIONS_LIB}])
 AC_MSG_NOTICE([boost_program_options_LIBS : ${boost_program_options_LIBS}])
+
+AX_BOOST_REGEX
+AC_SUBST([boost_regex_LIBS], [${BOOST_REGEX_LIB}])
+AC_MSG_NOTICE([boost_regex_LIBS : ${boost_regex_LIBS}])
 
 AX_BOOST_SYSTEM
 AC_SUBST([boost_system_LIBS], [${BOOST_SYSTEM_LIB}])
@@ -477,13 +290,13 @@ AS_CASE([${host_os}],
 
 AC_MSG_NOTICE([dl_LIBS : ${dl_LIBS}])
 
-# Require secp256k1 of at least version 0.1.0.20 and output ${secp256k1_CPPFLAGS/LIBS/PKG}.
+# Require secp256k1 of at least version 0.1.0.19 and output ${secp256k1_CPPFLAGS/LIBS/PKG}.
 #------------------------------------------------------------------------------
-PKG_CHECK_MODULES([secp256k1], [libsecp256k1 >= 0.1.0.20],
-    [secp256k1_INCLUDEDIR="`$PKG_CONFIG --variable=includedir "libsecp256k1 >= 0.1.0.20" 2>/dev/null`"
-     secp256k1_OTHER_CFLAGS="`$PKG_CONFIG --cflags-only-other "libsecp256k1 >= 0.1.0.20" 2>/dev/null`"],
-    [AC_MSG_ERROR([libsecp256k1 >= 0.1.0.20 is required but was not found.])])
-AC_SUBST([secp256k1_PKG], ['libsecp256k1 >= 0.1.0.20'])
+PKG_CHECK_MODULES([secp256k1], [libsecp256k1 >= 0.1.0.19],
+    [secp256k1_INCLUDEDIR="`$PKG_CONFIG --variable=includedir "libsecp256k1 >= 0.1.0.19" 2>/dev/null`"
+     secp256k1_OTHER_CFLAGS="`$PKG_CONFIG --cflags-only-other "libsecp256k1 >= 0.1.0.19" 2>/dev/null`"],
+    [AC_MSG_ERROR([libsecp256k1 >= 0.1.0.19 is required but was not found.])])
+AC_SUBST([secp256k1_PKG], ['libsecp256k1 >= 0.1.0.19'])
 AC_SUBST([secp256k1_CPPFLAGS], [${secp256k1_CFLAGS}])
 AS_IF([test x${secp256k1_INCLUDEDIR} != "x"],
     [AC_SUBST([secp256k1_ISYS_CPPFLAGS], ["-isystem${secp256k1_INCLUDEDIR} ${secp256k1_OTHER_CFLAGS}"])],
@@ -499,6 +312,109 @@ AS_CASE([${enable_isystem}],[yes],
     [AC_SUBST([secp256k1_BUILD_CPPFLAGS], [${secp256k1_CPPFLAGS}])])
 
 AC_MSG_NOTICE([secp256k1_BUILD_CPPFLAGS : ${secp256k1_BUILD_CPPFLAGS}])
+
+
+# Set flags.
+#==============================================================================
+# Require c++11 for all c++ products.
+#------------------------------------------------------------------------------
+AS_CASE([${CC}], [*],
+    [AX_CHECK_COMPILE_FLAG([-std=c++11],
+        [CXXFLAGS="$CXXFLAGS -std=c++11"])])
+
+# Warn on all stuff.
+#------------------------------------------------------------------------------
+AS_CASE([${CC}], [*],
+    [AX_CHECK_COMPILE_FLAG([-Wall],
+        [CFLAGS="$CFLAGS -Wall"])])
+
+# Warn on all stuff.
+#------------------------------------------------------------------------------
+AS_CASE([${CC}], [*],
+    [AX_CHECK_COMPILE_FLAG([-Wall],
+        [CXXFLAGS="$CXXFLAGS -Wall"])])
+
+# Warn on extra stuff.
+#------------------------------------------------------------------------------
+AS_CASE([${CC}], [*],
+    [AX_CHECK_COMPILE_FLAG([-Wextra],
+        [CFLAGS="$CFLAGS -Wextra"])])
+
+# Warn on extra stuff.
+#------------------------------------------------------------------------------
+AS_CASE([${CC}], [*],
+    [AX_CHECK_COMPILE_FLAG([-Wextra],
+        [CXXFLAGS="$CXXFLAGS -Wextra"])])
+
+# Be really annoying.
+#------------------------------------------------------------------------------
+AS_CASE([${CC}], [*],
+    [AX_CHECK_COMPILE_FLAG([-Wpedantic],
+        [CFLAGS="$CFLAGS -Wpedantic"],
+        [AX_CHECK_COMPILE_FLAG([-pedantic],
+            [CFLAGS="$CFLAGS -pedantic"])])])
+
+# Be really annoying.
+#------------------------------------------------------------------------------
+AS_CASE([${CC}], [*],
+    [AX_CHECK_COMPILE_FLAG([-Wpedantic],
+        [CXXFLAGS="$CXXFLAGS -Wpedantic"],
+        [AX_CHECK_COMPILE_FLAG([-pedantic],
+            [CXXFLAGS="$CXXFLAGS -pedantic"])])])
+
+# Disallow warning on style order of declarations.
+#------------------------------------------------------------------------------
+AS_CASE([${CC}], [*],
+    [AX_CHECK_COMPILE_FLAG([-Wno-reorder],
+        [CXXFLAGS="$CXXFLAGS -Wno-reorder"])])
+
+# Suppress warning for incomplete field initialization.
+#------------------------------------------------------------------------------
+AS_CASE([${CC}], [*],
+    [AX_CHECK_COMPILE_FLAG([-Wno-missing-field-initializers],
+        [CXXFLAGS="$CXXFLAGS -Wno-missing-field-initializers"])])
+
+# Conform to style.
+#------------------------------------------------------------------------------
+AS_CASE([${CC}], [*],
+    [AX_CHECK_COMPILE_FLAG([-Wno-missing-braces],
+        [CXXFLAGS="$CXXFLAGS -Wno-missing-braces"])])
+
+# Ignore comments within comments or commenting of backslash extended lines.
+#------------------------------------------------------------------------------
+AS_CASE([${CC}], [*],
+    [AX_CHECK_COMPILE_FLAG([-Wno-comment],
+        [CXXFLAGS="$CXXFLAGS -Wno-comment"])])
+
+# Conflict in stdlib under clang. Enabled in clang only.
+#------------------------------------------------------------------------------
+AS_CASE([${CC}], [*clang*],
+    [AX_CHECK_COMPILE_FLAG([-Wno-mismatched-tags],
+        [CXXFLAGS="$CXXFLAGS -Wno-mismatched-tags"])])
+
+# Protect stack.
+#------------------------------------------------------------------------------
+AS_CASE([${CC}], [*],
+    [AX_CHECK_LINK_FLAG([-fstack-protector],
+        [LDFLAGS="$LDFLAGS -fstack-protector"])])
+
+# Protect stack comprehensively.
+#------------------------------------------------------------------------------
+AS_CASE([${CC}], [*],
+    [AX_CHECK_LINK_FLAG([-fstack-protector-all],
+        [LDFLAGS="$LDFLAGS -fstack-protector-all"])])
+
+# Allow use of C99 'long long' type.
+#------------------------------------------------------------------------------
+AS_CASE([${CC}], [*],
+    [AX_CHECK_COMPILE_FLAG([-Wno-long-long],
+        [CFLAGS="$CFLAGS -Wno-long-long"])])
+
+# Limit delays and warnings. Enabled in gcc only.
+#------------------------------------------------------------------------------
+AS_CASE([${CC}], [*gcc*],
+    [AX_CHECK_COMPILE_FLAG([-fno-var-tracking-assignments],
+        [CXXFLAGS="$CXXFLAGS -fno-var-tracking-assignments"])])
 
 
 # Process outputs into templates.

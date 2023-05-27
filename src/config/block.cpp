@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2022 libbitcoin developers (see AUTHORS)
+ * Copyright (c) 2011-2019 libbitcoin developers (see AUTHORS)
  *
  * This file is part of libbitcoin.
  *
@@ -18,67 +18,86 @@
  */
 #include <bitcoin/system/config/block.hpp>
 
-#include <iostream>
 #include <sstream>
 #include <string>
-#include <utility>
+#include <boost/program_options.hpp>
 #include <bitcoin/system/chain/block.hpp>
 #include <bitcoin/system/config/base16.hpp>
-#include <bitcoin/system/radix/radix.hpp>
 
 namespace libbitcoin {
 namespace system {
 namespace config {
 
-block::block() NOEXCEPT
-  : chain::block()
+block::block()
+  : value_()
 {
 }
 
-block::block(chain::block&& value) NOEXCEPT
-  : chain::block(std::move(value))
+block::block(const std::string& hexcode)
+  : value_()
+{
+    std::stringstream(hexcode) >> *this;
+}
+
+block::block(const chain::block& value)
+  : value_(value)
 {
 }
 
-block::block(const chain::block& value) NOEXCEPT
-  : chain::block(value)
+block::block(const block& other)
+  : block(other.value_)
 {
 }
 
-block::block(const std::string& base16) THROWS
-  : block()
+block& block::operator=(const block& other)
 {
-    std::istringstream(base16) >> *this;
+    value_ = chain::block(other.value_);
+    return *this;
 }
 
-std::string block::to_string() const NOEXCEPT
+block& block::operator=(chain::block&& other)
+{
+    value_ = std::move(other);
+    return *this;
+}
+
+bool block::operator==(const block& other) const
+{
+    return value_ == other.value_;
+}
+
+block::operator const chain::block&() const
+{
+    return value_;
+}
+
+std::string block::to_string() const
 {
     std::stringstream value;
     value << *this;
     return value.str();
 }
 
-std::istream& operator>>(std::istream& stream, block& argument) THROWS
+std::istream& operator>>(std::istream& input, block& argument)
 {
-    std::string base16;
-    stream >> base16;
+    std::string hexcode;
+    input >> hexcode;
 
-    data_chunk bytes;
-    if (!decode_base16(bytes, base16))
-        throw istream_exception(base16);
+    if (!argument.value_.from_data(base16(hexcode)))
+    {
+        using namespace boost::program_options;
+        BOOST_THROW_EXCEPTION(invalid_option_value(hexcode));
+    }
 
-    argument = chain::block{ bytes, true };
-
-    if (!argument.is_valid())
-        throw istream_exception(base16);
-
-    return stream;
+    return input;
 }
 
-std::ostream& operator<<(std::ostream& stream, const block& argument) NOEXCEPT
+std::ostream& operator<<(std::ostream& output, const block& argument)
 {
-    stream << encode_base16(argument.to_data(true));
-    return stream;
+    const auto bytes = argument.value_.to_data();
+
+    output << base16(bytes);
+    return output;
 }
 
 } // namespace config

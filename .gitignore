@@ -1,5 +1,7 @@
 .deps
 .libs
+.build/
+.vscode/
 *.la
 *.lo
 *.o
@@ -25,3 +27,4 @@ obj
 /configure
 /libtool
 .dirstamp
+/.vs

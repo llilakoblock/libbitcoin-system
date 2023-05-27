@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2022 libbitcoin developers (see AUTHORS)
+ * Copyright (c) 2011-2019 libbitcoin developers (see AUTHORS)
  *
  * This file is part of libbitcoin.
  *
@@ -22,38 +22,89 @@
 #include <array>
 #include <iostream>
 #include <string>
-#include <bitcoin/system/data/data.hpp>
+#include <cstdint>
 #include <bitcoin/system/define.hpp>
+#include <bitcoin/system/utility/data.hpp>
 
 namespace libbitcoin {
 namespace system {
 namespace config {
 
-/// Serialization helper for base16 encoded data.
-class BC_API base16 final
+/**
+ * Serialization helper for base16 encoded data.
+ */
+class BC_API base16
 {
 public:
-    base16() NOEXCEPT;
-    base16(data_chunk&& value) NOEXCEPT;
-    base16(const data_chunk& value) NOEXCEPT;
-    base16(const std::string& base16) THROWS;
 
+    /**
+     * Default constructor.
+     */
+    base16();
+
+    /**
+     * Initialization constructor.
+     * @param[in]  hexcode  The value to initialize with.
+     */
+    base16(const std::string& hexcode);
+
+    /**
+     * Initialization constructor.
+     * @param[in]  value  The value to initialize with.
+     */
+    base16(const data_chunk& value);
+
+    /**
+     * Initialization constructor.
+     * @param[in]  value  The value to initialize with.
+     */
     template<size_t Size>
-    base16(const data_array<Size>& value) NOEXCEPT
+    base16(const byte_array<Size>& value)
       : value_(value.begin(), value.end())
     {
     }
 
-    // unsafe
-    ////operator data_slice() const NOEXCEPT;
-    operator const data_chunk&() const NOEXCEPT;
+    /**
+     * Copy constructor.
+     * @param[in]  other  The object to copy into self on construct.
+     */
+    base16(const base16& other);
 
-    friend std::istream& operator>>(std::istream& stream,
-        base16& argument) THROWS;
-    friend std::ostream& operator<<(std::ostream& stream,
-        const base16& argument) NOEXCEPT;
+    /**
+     * Overload cast to internal type.
+     * @return  This object's value cast to internal type reference.
+     */
+    operator const data_chunk&() const;
+
+    /**
+     * Overload cast to generic data reference.
+     * @return  This object's value cast to a generic data.
+     */
+    operator data_slice() const;
+
+    /**
+     * Overload stream in. If input is invalid sets no bytes in argument.
+     * @param[in]   input     The input stream to read the value from.
+     * @param[out]  argument  The object to receive the read value.
+     * @return                The input stream reference.
+     */
+    friend std::istream& operator>>(std::istream& input,
+        base16& argument);
+
+    /**
+     * Overload stream out.
+     * @param[in]   output    The output stream to write the value to.
+     * @param[out]  argument  The object from which to obtain the value.
+     * @return                The output stream reference.
+     */
+    friend std::ostream& operator<<(std::ostream& output,
+        const base16& argument);
 
 private:
+
+    /**
+     * The state of this object.
+     */
     data_chunk value_;
 };
 

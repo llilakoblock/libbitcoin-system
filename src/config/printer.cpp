@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2022 libbitcoin developers (see AUTHORS)
+ * Copyright (c) 2011-2019 libbitcoin developers (see AUTHORS)
  *
  * This file is part of libbitcoin.
  *
@@ -18,20 +18,18 @@
  */
 #include <bitcoin/system/config/printer.hpp>
 
-////#include <format>
+#include <string>
+#include <vector>
+#include <boost/algorithm/string.hpp>
 #include <boost/format.hpp>
+#include <boost/program_options.hpp>
 #include <bitcoin/system/config/parameter.hpp>
-#include <bitcoin/system/data/data.hpp>
 #include <bitcoin/system/define.hpp>
-#include <bitcoin/system/unicode/ascii.hpp>
-#include <bitcoin/system/unicode/code_points.hpp>
+#include <bitcoin/system/utility/assert.hpp>
+#include <bitcoin/system/utility/collection.hpp>
+#include <bitcoin/system/utility/string.hpp>
 
 // We built this because po::options_description.print() sucks.
-// C++20: en.cppreference.com/w/cpp/utility/format/format
-
-namespace libbitcoin {
-namespace system {
-namespace config {
 
 // TODO: parameterize these localized values.
 // Various shared localizable strings.
@@ -64,39 +62,47 @@ namespace config {
 #define BC_PRINTER_SETTING_OPTIONAL_FORMAT "%1% = <%2%>\n"
 #define BC_PRINTER_SETTING_REQUIRED_FORMAT "%1% = %2%\n"
 
-BC_PUSH_WARNING(NO_THROW_IN_NOEXCEPT)
-
+namespace po = boost::program_options;
+using namespace libbitcoin::system;
+using namespace libbitcoin::system::config;
 using boost::format;
+
 const int printer::max_arguments = 256;
 
-printer::printer(const options_metadata& options,
-    const arguments_metadata& arguments, const std::string& application,
-    const std::string& description, const std::string& command) NOEXCEPT
+printer::~printer()
+{
+}
+
+printer::printer(const po::options_description& options,
+    const po::positional_options_description& arguments,
+    const std::string& application, const std::string& description,
+    const std::string& command)
   : options_(options), arguments_(arguments), application_(application),
     description_(description), command_(command)
 {
 }
 
-printer::printer(const options_metadata& settings,
-    const std::string& application, const std::string& description) NOEXCEPT
+printer::printer(const po::options_description& settings,
+    const std::string& application, const std::string& description)
   : options_(settings), application_(application), description_(description)
 {
 }
 
-// Formatters
-// ----------------------------------------------------------------------------
+/* Formatters */
 
-static void enqueue_fragment(const std::string& fragment,
-    std::vector<std::string>& column) NOEXCEPT
+// 100% component tested.
+static void enqueue_fragment(std::string& fragment,
+    std::vector<std::string>& column)
 {
     if (!fragment.empty())
         column.push_back(fragment);
 }
 
+// 100% component tested.
 std::vector<std::string> printer::columnize(const std::string& paragraph,
-    size_t width) NOEXCEPT
+    size_t width)
 {
-    const auto words = split(paragraph, ascii_space, false);
+    const auto words = split(paragraph, " ", false);
 
     std::string fragment;
     std::vector<std::string> column;
@@ -105,7 +111,7 @@ std::vector<std::string> printer::columnize(const std::string& paragraph,
     {
         if (!fragment.empty() && (word.length() + fragment.length() < width))
         {
-            fragment += " " + word;
+            fragment += BC_SENTENCE_DELIMITER + word;
             continue;
         }
 
@@ -117,7 +123,8 @@ std::vector<std::string> printer::columnize(const std::string& paragraph,
     return column;
 }
 
-static std::string format_row_name(const parameter& value) NOEXCEPT
+// 100% component tested.
+static std::string format_row_name(const parameter& value)
 {
     // We hack in upper case for all positional args because of a bug in
     // boost that requires environment variable options to be lower case
@@ -127,7 +134,7 @@ static std::string format_row_name(const parameter& value) NOEXCEPT
 
     if (value.position() != parameter::not_positional)
         return (format(BC_PRINTER_TABLE_ARGUMENT_FORMAT) %
-            ascii_to_upper(value.long_name())).str();
+            boost::to_upper_copy(value.long_name())).str();
     else if (value.short_name() == parameter::no_short_name)
         return (format(BC_PRINTER_TABLE_OPTION_LONG_FORMAT) %
             value.long_name()).str();
@@ -139,17 +146,19 @@ static std::string format_row_name(const parameter& value) NOEXCEPT
             value.short_name() % value.long_name()).str();
 }
 
-static bool match_positional(bool positional, const parameter& value) NOEXCEPT
+// 100% component tested.
+static bool match_positional(bool positional, const parameter& value)
 {
-    const auto positioned = value.position() != parameter::not_positional;
+    auto positioned = value.position() != parameter::not_positional;
     return positioned == positional;
 }
 
+// 100% component tested.
 // This formats to 73 char width as: [ 20 | ' ' | 52 | '\n' ]
 // GitHub code examples start horizontal scroll after 73 characters.
-std::string printer::format_parameters_table(bool positional) NOEXCEPT
+std::string printer::format_parameters_table(bool positional)
 {
-    std::ostringstream output;
+    std::stringstream output;
     const auto& parameters = get_parameters();
     format table_format("%-20s %-52s\n");
 
@@ -180,9 +189,9 @@ std::string printer::format_parameters_table(bool positional) NOEXCEPT
 
 // This formats to 73 char width: [ 73 | '\n' ]
 // GitHub code examples start horizontal scroll after 73 characters.
-std::string printer::format_paragraph(const std::string& paragraph) NOEXCEPT
+std::string printer::format_paragraph(const std::string& paragraph)
 {
-    std::ostringstream output;
+    std::stringstream output;
     format paragraph_format("%-73s\n");
 
     const auto lines = columnize(paragraph, 73);
@@ -194,7 +203,7 @@ std::string printer::format_paragraph(const std::string& paragraph) NOEXCEPT
 }
 
 static std::string format_setting(const parameter& value,
-    const std::string& name) NOEXCEPT
+    const std::string& name)
 {
     // A required argument may only be preceded by required arguments.
     // Requiredness may be in error if the metadata is inconsistent.
@@ -216,9 +225,9 @@ static std::string format_setting(const parameter& value,
 
 // Requires a single period in each setting (i.e. no unnamed sections).
 static void split_setting_name(const parameter& value, std::string& name,
-    std::string& section) NOEXCEPT
+    std::string& section)
 {
-    const auto tokens = split(value.long_name(), ".", false);
+    const auto tokens = split(value.long_name(), ".");
     if (tokens.size() != 2)
     {
         section.clear();
@@ -230,11 +239,11 @@ static void split_setting_name(const parameter& value, std::string& name,
     name = tokens[1];
 }
 
-std::string printer::format_settings_table() NOEXCEPT
+std::string printer::format_settings_table()
 {
     std::string name;
     std::string section;
-    std::ostringstream output;
+    std::stringstream output;
     std::string preceding_section;
 
     const auto& parameters = get_parameters();
@@ -243,7 +252,7 @@ std::string printer::format_settings_table() NOEXCEPT
         split_setting_name(parameter, name, section);
         if (section.empty())
         {
-            BC_ASSERT_MSG(false, "Invalid config setting metadata.");
+            BITCOIN_ASSERT_MSG(false, "Invalid config setting metadata.");
             continue;
         }
 
@@ -266,7 +275,7 @@ std::string printer::format_settings_table() NOEXCEPT
     return output.str();
 }
 
-std::string printer::format_usage() NOEXCEPT
+std::string printer::format_usage()
 {
     // USAGE: bx COMMAND [-hvt] -n VALUE [-m VALUE] [-w VALUE]... REQUIRED
     // [OPTIONAL] [MULTIPLE]...
@@ -276,7 +285,7 @@ std::string printer::format_usage() NOEXCEPT
     return format_paragraph(usage.str());
 }
 
-std::string printer::format_description() NOEXCEPT
+std::string printer::format_description()
 {
     // Info: %1%
     const auto described = format(BC_PRINTER_DESCRIPTION_FORMAT) %
@@ -285,7 +294,8 @@ std::string printer::format_description() NOEXCEPT
     return format_paragraph(described.str());
 }
 
-std::string printer::format_usage_parameters() NOEXCEPT
+// 100% component tested.
+std::string printer::format_usage_parameters()
 {
     std::string toggle_short_options;
     std::vector<std::string> toggle_long_options;
@@ -338,15 +348,15 @@ std::string printer::format_usage_parameters() NOEXCEPT
         {
             // to_upper_copy is a hack for boost bug, see format_row_name.
             if (required)
-                required_arguments.push_back(ascii_to_upper(long_name));
+                required_arguments.push_back(boost::to_upper_copy(long_name));
             else if (optional)
-                optional_arguments.push_back(ascii_to_upper(long_name));
+                optional_arguments.push_back(boost::to_upper_copy(long_name));
             else
-                multiple_arguments.push_back(ascii_to_upper(long_name));
+                multiple_arguments.push_back(boost::to_upper_copy(long_name));
         }
     }
 
-    std::ostringstream usage;
+    std::stringstream usage;
 
     if (!toggle_short_options.empty())
         usage << format(BC_PRINTER_USAGE_OPTION_TOGGLE_SHORT_FORMAT) %
@@ -380,13 +390,13 @@ std::string printer::format_usage_parameters() NOEXCEPT
         usage << format(BC_PRINTER_USAGE_ARGUMENT_MULTIPLE_FORMAT) %
             multiple_argument;
 
-    return trim_copy(usage.str());
+    return boost::trim_copy(usage.str());
 }
 
-// Initialization
+/* Initialization */
 
-static void enqueue_name(int count, std::string& name,
-    argument_list& names) NOEXCEPT
+// 100% component tested.
+static void enqueue_name(int count, std::string& name, argument_list& names)
 {
     if (count <= 0)
         return;
@@ -397,9 +407,10 @@ static void enqueue_name(int count, std::string& name,
     names.push_back(argument_pair(name, count));
 }
 
+// 100% component tested.
 // This method just gives us a copy of arguments_metadata private state.
 // It would be nice if instead that state was public.
-void printer::generate_argument_names() NOEXCEPT
+void printer::generate_argument_names()
 {
     // Member values
     const auto& args = arguments();
@@ -441,13 +452,14 @@ void printer::generate_argument_names() NOEXCEPT
         argument_names);
 }
 
-static bool compare_parameters(const parameter left,
-    const parameter right) NOEXCEPT
+// 100% component tested.
+static bool compare_parameters(const parameter left, const parameter right)
 {
     return left.format_name() < right.format_name();
 }
 
-void printer::generate_parameters() NOEXCEPT
+// 100% component tested.
+void printer::generate_parameters()
 {
     const auto& argument_names = get_argument_names();
     const auto& opts = options();
@@ -468,16 +480,16 @@ void printer::generate_parameters() NOEXCEPT
     }
 }
 
-void printer::initialize() NOEXCEPT
+// 100% component tested.
+void printer::initialize()
 {
     generate_argument_names();
     generate_parameters();
 }
 
-// Printers
-// ----------------------------------------------------------------------------
+/* Printers */
 
-void printer::commandline(std::ostream& output) NOEXCEPT
+void printer::commandline(std::ostream& output)
 {
     const auto& option_table = format_parameters_table(false);
     const auto& argument_table = format_parameters_table(true);
@@ -497,7 +509,7 @@ void printer::commandline(std::ostream& output) NOEXCEPT
         << std::endl << argument_table;
 }
 
-void printer::settings(std::ostream& output) NOEXCEPT
+void printer::settings(std::ostream& output)
 {
     const auto& setting_table = format_settings_table();
 
@@ -506,9 +518,3 @@ void printer::settings(std::ostream& output) NOEXCEPT
 
     output << std::endl << setting_table;
 }
-
-BC_POP_WARNING()
-
-} // namespace config
-} // namespace system
-} // namespace libbitcoin

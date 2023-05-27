@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2022 libbitcoin developers (see AUTHORS)
+ * Copyright (c) 2011-2019 libbitcoin developers (see AUTHORS)
  *
  * This file is part of libbitcoin.
  *
@@ -19,14 +19,17 @@
 #include <bitcoin/system/chain/header.hpp>
 
 #include <chrono>
+#include <cstddef>
 #include <utility>
 #include <bitcoin/system/chain/chain_state.hpp>
 #include <bitcoin/system/chain/compact.hpp>
-#include <bitcoin/system/data/data.hpp>
-#include <bitcoin/system/define.hpp>
-#include <bitcoin/system/hash/hash.hpp>
-#include <bitcoin/system/error/error.hpp>
-#include <bitcoin/system/stream/stream.hpp>
+#include <bitcoin/system/constants.hpp>
+#include <bitcoin/system/error.hpp>
+#include <bitcoin/system/math/hash.hpp>
+#include <bitcoin/system/utility/container_sink.hpp>
+#include <bitcoin/system/utility/container_source.hpp>
+#include <bitcoin/system/utility/istream_reader.hpp>
+#include <bitcoin/system/utility/ostream_writer.hpp>
 
 namespace libbitcoin {
 namespace system {
@@ -36,88 +39,99 @@ namespace chain {
 using wall_clock = std::chrono::system_clock;
 
 // Constructors.
-// ----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 
-header::header() NOEXCEPT
-  : header(0, {}, {}, 0, 0, 0, false)
+header::header()
+  : header(0, null_hash, null_hash, 0, 0, 0)
+{
+}
+
+header::header(header&& other)
+  : hash_(other.hash_cache()),
+    version_(other.version_),
+    previous_block_hash_(std::move(other.previous_block_hash_)),
+    merkle_root_(std::move(other.merkle_root_)),
+    timestamp_(other.timestamp_),
+    bits_(other.bits_),
+    nonce_(other.nonce_),
+    metadata(std::move(other.metadata))
+{
+}
+
+header::header(const header& other)
+  : hash_(other.hash_cache()),
+    version_(other.version_),
+    previous_block_hash_(other.previous_block_hash_),
+    merkle_root_(other.merkle_root_),
+    timestamp_(other.timestamp_),
+    bits_(other.bits_),
+    nonce_(other.nonce_),
+    metadata(other.metadata)
 {
 }
 
 header::header(uint32_t version, hash_digest&& previous_block_hash,
-    hash_digest&& merkle_root, uint32_t timestamp, uint32_t bits,
-    uint32_t nonce) NOEXCEPT
-  : header(version, std::move(previous_block_hash), std::move(merkle_root),
-      timestamp, bits, nonce, true)
-{
-}
-
-header::header(uint32_t version, const hash_digest& previous_block_hash,
-    const hash_digest& merkle_root, uint32_t timestamp, uint32_t bits,
-    uint32_t nonce) NOEXCEPT
-  : header(version, previous_block_hash, merkle_root, timestamp, bits, nonce,
-      true)
-{
-}
-
-header::header(const data_slice& data) NOEXCEPT
-    BC_PUSH_WARNING(NO_THROW_IN_NOEXCEPT)
-  : header(stream::in::copy(data))
-    BC_POP_WARNING()
-{
-}
-
-header::header(std::istream&& stream) NOEXCEPT
-  : header(read::bytes::istream(stream))
-{
-}
-
-header::header(std::istream& stream) NOEXCEPT
-  : header(read::bytes::istream(stream))
-{
-}
-
-header::header(reader&& source) NOEXCEPT
-  : header(from_data(source))
-{
-}
-
-header::header(reader& source) NOEXCEPT
-  : header(from_data(source))
-{
-}
-
-// protected
-header::header(uint32_t version, hash_digest&& previous_block_hash,
-    hash_digest&& merkle_root, uint32_t timestamp, uint32_t bits,
-    uint32_t nonce, bool valid) NOEXCEPT
+    hash_digest&& merkle_root, uint32_t timestamp, uint32_t bits, uint32_t nonce)
   : version_(version),
     previous_block_hash_(std::move(previous_block_hash)),
     merkle_root_(std::move(merkle_root)),
     timestamp_(timestamp),
     bits_(bits),
     nonce_(nonce),
-    valid_(valid)
+    metadata{}
 {
 }
 
-// protected
 header::header(uint32_t version, const hash_digest& previous_block_hash,
     const hash_digest& merkle_root, uint32_t timestamp, uint32_t bits,
-    uint32_t nonce, bool valid) NOEXCEPT
+    uint32_t nonce)
   : version_(version),
     previous_block_hash_(previous_block_hash),
     merkle_root_(merkle_root),
     timestamp_(timestamp),
     bits_(bits),
     nonce_(nonce),
-    valid_(valid)
+    metadata{}
 {
 }
 
-// Operators.
-// ----------------------------------------------------------------------------
+// Private cache access for copy/move construction.
+header::hash_ptr header::hash_cache() const
+{
+    shared_lock lock(mutex_);
+    return hash_;
+}
 
-bool header::operator==(const header& other) const NOEXCEPT
+// Operators.
+//-----------------------------------------------------------------------------
+
+header& header::operator=(header&& other)
+{
+    hash_ = other.hash_cache();
+    version_ = other.version_;
+    previous_block_hash_ = std::move(other.previous_block_hash_);
+    merkle_root_ = std::move(other.merkle_root_);
+    timestamp_ = other.timestamp_;
+    bits_ = other.bits_;
+    nonce_ = other.nonce_;
+    metadata = std::move(other.metadata);
+    return *this;
+}
+
+header& header::operator=(const header& other)
+{
+    hash_ = other.hash_cache();
+    version_ = other.version_;
+    previous_block_hash_ = other.previous_block_hash_;
+    merkle_root_ = other.merkle_root_;
+    timestamp_ = other.timestamp_;
+    bits_ = other.bits_;
+    nonce_ = other.nonce_;
+    metadata = other.metadata;
+    return *this;
+}
+
+bool header::operator==(const header& other) const
 {
     return (version_ == other.version_)
         && (previous_block_hash_ == other.previous_block_hash_)
@@ -127,275 +141,406 @@ bool header::operator==(const header& other) const NOEXCEPT
         && (nonce_ == other.nonce_);
 }
 
-bool header::operator!=(const header& other) const NOEXCEPT
+bool header::operator!=(const header& other) const
 {
     return !(*this == other);
 }
 
 // Deserialization.
-// ----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 
-// static/private
-header header::from_data(reader& source) NOEXCEPT
+// static
+header header::factory(const data_chunk& data, bool wire)
 {
-    return
-    {
-        source.read_4_bytes_little_endian(),
-        source.read_hash(),
-        source.read_hash(),
-        source.read_4_bytes_little_endian(),
-        source.read_4_bytes_little_endian(),
-        source.read_4_bytes_little_endian(),
-        source
-    };
+    header instance;
+    instance.from_data(data, wire);
+    return instance;
+}
+
+// static
+header header::factory(std::istream& stream, bool wire)
+{
+    header instance;
+    instance.from_data(stream, wire);
+    return instance;
+}
+
+// static
+header header::factory(reader& source, bool wire)
+{
+    header instance;
+    instance.from_data(source, wire);
+    return instance;
+}
+
+// static
+header header::factory(reader& source, hash_digest&& hash, bool wire)
+{
+    header instance;
+    instance.from_data(source, std::move(hash), wire);
+    return instance;
+}
+
+// static
+header header::factory(reader& source, const hash_digest& hash, bool wire)
+{
+    header instance;
+    instance.from_data(source, hash, wire);
+    return instance;
+}
+
+bool header::from_data(const data_chunk& data, bool wire)
+{
+    data_source istream(data);
+    return from_data(istream, wire);
+}
+
+bool header::from_data(std::istream& stream, bool wire)
+{
+    istream_reader source(stream);
+    return from_data(source, wire);
+}
+
+bool header::from_data(reader& source, bool)
+{
+    ////reset();
+
+    version_ = source.read_4_bytes_little_endian();
+    previous_block_hash_ = source.read_hash();
+    merkle_root_ = source.read_hash();
+    timestamp_ = source.read_4_bytes_little_endian();
+    bits_ = source.read_4_bytes_little_endian();
+    nonce_ = source.read_4_bytes_little_endian();
+
+    if (!source)
+        reset();
+
+    return source;
+}
+
+bool header::from_data(reader& source, hash_digest&& hash, bool wire)
+{
+    if (!from_data(source, wire))
+        return false;
+
+    hash_ = std::make_shared<hash_digest>(std::move(hash));
+    return true;
+}
+
+bool header::from_data(reader& source, const hash_digest& hash, bool wire)
+{
+    if (!from_data(source, wire))
+        return false;
+
+    hash_ = std::make_shared<hash_digest>(hash);
+    return true;
+}
+
+// protected
+void header::reset()
+{
+    version_ = 0;
+    previous_block_hash_.fill(0);
+    merkle_root_.fill(0);
+    timestamp_ = 0;
+    bits_ = 0;
+    nonce_ = 0;
+    invalidate_cache();
+}
+
+bool header::is_valid() const
+{
+    return (version_ != 0) ||
+        (previous_block_hash_ != null_hash) ||
+        (merkle_root_ != null_hash) ||
+        (timestamp_ != 0) ||
+        (bits_ != 0) ||
+        (nonce_ != 0);
 }
 
 // Serialization.
-// ----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 
-data_chunk header::to_data() const NOEXCEPT
+data_chunk header::to_data(bool wire) const
 {
-    data_chunk data(serialized_size());
-
-    BC_PUSH_WARNING(NO_THROW_IN_NOEXCEPT)
-    stream::out::copy ostream(data);
-    BC_POP_WARNING()
-
-    to_data(ostream);
+    data_chunk data;
+    const auto size = serialized_size(wire);
+    data.reserve(size);
+    data_sink ostream(data);
+    to_data(ostream, wire);
+    ostream.flush();
+    BITCOIN_ASSERT(data.size() == size);
     return data;
 }
 
-void header::to_data(std::ostream& stream) const NOEXCEPT
+void header::to_data(std::ostream& stream, bool wire) const
 {
-    write::bytes::ostream out(stream);
-    to_data(out);
+    ostream_writer sink(stream);
+    to_data(sink, wire);
 }
 
-void header::to_data(writer& sink) const NOEXCEPT
+void header::to_data(writer& sink, bool) const
 {
     sink.write_4_bytes_little_endian(version_);
-    sink.write_bytes(previous_block_hash_);
-    sink.write_bytes(merkle_root_);
+    sink.write_hash(previous_block_hash_);
+    sink.write_hash(merkle_root_);
     sink.write_4_bytes_little_endian(timestamp_);
     sink.write_4_bytes_little_endian(bits_);
     sink.write_4_bytes_little_endian(nonce_);
 }
 
-// Properties.
-// ----------------------------------------------------------------------------
+// Size.
+//-----------------------------------------------------------------------------
 
-bool header::is_valid() const NOEXCEPT
+// static
+size_t header::satoshi_fixed_size()
 {
-    return valid_;
+    return sizeof(version_)
+        + hash_size
+        + hash_size
+        + sizeof(timestamp_)
+        + sizeof(bits_)
+        + sizeof(nonce_);
 }
 
-uint32_t header::version() const NOEXCEPT
+size_t header::serialized_size(bool) const
+{
+    return satoshi_fixed_size();
+}
+
+// Accessors.
+//-----------------------------------------------------------------------------
+
+uint32_t header::version() const
 {
     return version_;
 }
 
-const hash_digest& header::previous_block_hash() const NOEXCEPT
+void header::set_version(uint32_t value)
+{
+    version_ = value;
+    invalidate_cache();
+}
+
+const hash_digest& header::previous_block_hash() const
 {
     return previous_block_hash_;
 }
 
-const hash_digest& header::merkle_root() const NOEXCEPT
+void header::set_previous_block_hash(const hash_digest& value)
+{
+    previous_block_hash_ = value;
+    invalidate_cache();
+}
+
+void header::set_previous_block_hash(hash_digest&& value)
+{
+    previous_block_hash_ = std::move(value);
+    invalidate_cache();
+}
+
+const hash_digest& header::merkle_root() const
 {
     return merkle_root_;
 }
 
-uint32_t header::timestamp() const NOEXCEPT
+void header::set_merkle_root(const hash_digest& value)
+{
+    merkle_root_ = value;
+    invalidate_cache();
+}
+
+void header::set_merkle_root(hash_digest&& value)
+{
+    merkle_root_ = std::move(value);
+    invalidate_cache();
+}
+
+uint32_t header::timestamp() const
 {
     return timestamp_;
 }
 
-uint32_t header::bits() const NOEXCEPT
+void header::set_timestamp(uint32_t value)
+{
+    timestamp_ = value;
+    invalidate_cache();
+}
+
+uint32_t header::bits() const
 {
     return bits_;
 }
 
-uint32_t header::nonce() const NOEXCEPT
+void header::set_bits(uint32_t value)
+{
+    bits_ = value;
+    invalidate_cache();
+}
+
+uint32_t header::nonce() const
 {
     return nonce_;
 }
 
-void header::set_hash(hash_digest&& hash) const NOEXCEPT
+void header::set_nonce(uint32_t value)
 {
-    hash_ = to_shared(std::move(hash));
+    nonce_ = value;
+    invalidate_cache();
 }
 
-// computed
-hash_digest header::hash() const NOEXCEPT
+// Cache.
+//-----------------------------------------------------------------------------
+
+// protected
+void header::invalidate_cache() const
 {
+    ///////////////////////////////////////////////////////////////////////////
+    // Critical Section
+    mutex_.lock_upgrade();
+
     if (hash_)
-        return *hash_;
+    {
+        mutex_.unlock_upgrade_and_lock();
+        //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        hash_.reset();
+        //---------------------------------------------------------------------
+        mutex_.unlock_and_lock_upgrade();
+    }
 
-    hash_digest digest{};
-    ostream stream{ digest };
-    sha256x2_writer sink{ stream };
-    to_data(sink);
-    sink.flush();
-    return digest;
+    mutex_.unlock_upgrade();
+    ///////////////////////////////////////////////////////////////////////////
 }
 
-// static/private
-uint256_t header::difficulty(uint32_t bits) NOEXCEPT
+hash_digest header::hash() const
 {
-    auto target = compact::expand(bits);
+    ///////////////////////////////////////////////////////////////////////////
+    // Critical Section
+    mutex_.lock_upgrade();
 
-    //*************************************************************************
-    // CONSENSUS: bits may be overflowed, which is guarded here.
-    // A target of zero is disallowed so is useful as a sentinel value.
-    //*************************************************************************
-    if (is_zero(target))
-        return target;
+    if (!hash_)
+    {
+        //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        mutex_.unlock_upgrade_and_lock();
+        hash_ = std::make_shared<hash_digest>(bitcoin_hash(to_data()));
+        mutex_.unlock_and_lock_upgrade();
+        //---------------------------------------------------------------------
+    }
 
-    //*************************************************************************
-    // CONSENSUS: If target is (2^256)-1, division would fail, however compact
-    // compression is lossy, and therefore unable to produce negative one.
-    //*************************************************************************
+    const auto hash = *hash_;
+    mutex_.unlock_upgrade();
+    ///////////////////////////////////////////////////////////////////////////
 
-    // We need to compute 2**256 / (target + 1), but we can't represent 2**256
-    // as it's too large for uint256. However as 2**256 is at least as large as
-    // target + 1, it is equal to ((2**256 - target - 1) / (target + 1)) + 1, or
-    // (~target / (target + 1)) + 1.
-    return ++(~target / (target + one));
+    return hash;
 }
 
-// computed
-uint256_t header::difficulty() const NOEXCEPT
-{
-    // Returns zero if bits_ mantissa is less than one or bits_ is overflowed.
-    return difficulty(bits_);
-}
+// Validation helpers.
+//-----------------------------------------------------------------------------
 
-// Check.
-// ----------------------------------------------------------------------------
-
-bool header::is_invalid_proof_of_work(uint32_t proof_of_work_limit,
-    bool scrypt) const NOEXCEPT
-{
-    static const auto limit = compact::expand(proof_of_work_limit);
-    const auto target = compact::expand(bits_);
-
-    //*************************************************************************
-    // CONSENSUS: bits_ may be overflowed, which is guarded here.
-    // A target of zero is disallowed so is useful as a sentinel value.
-    //*************************************************************************
-    if (is_zero(target))
-        return true;
-
-    // Ensure claimed work is at or above minimum (less is more).
-    if (target > limit)
-        return true;
-
-    // Conditionally use scrypt proof of work (e.g. Litecoin).
-    return to_uintx(scrypt ? scrypt_hash(to_data()) : hash()) > target;
-}
-
-// ****************************************************************************
-/// CONSENSUS: bitcoin 32bit unix time: en.wikipedia.org/wiki/Year_2038_problem
-// ****************************************************************************
-bool header::is_invalid_timestamp(
-    uint32_t timestamp_limit_seconds) const NOEXCEPT
+/// BUGBUG: bitcoin 32bit unix time: en.wikipedia.org/wiki/Year_2038_problem
+bool header::is_valid_timestamp(uint32_t timestamp_limit_seconds) const
 {
     using namespace std::chrono;
     static const auto two_hours = seconds(timestamp_limit_seconds);
     const auto time = wall_clock::from_time_t(timestamp_);
     const auto future = wall_clock::now() + two_hours;
-    return time > future;
+    return time <= future;
 }
+
+bool header::is_valid_proof_of_work(uint32_t proof_of_work_limit,
+    bool scrypt) const
+{
+    const auto bits = compact(bits_);
+    static const uint256_t pow_limit(compact{ proof_of_work_limit });
+
+    if (bits.is_overflowed())
+        return false;
+
+    uint256_t target(bits);
+
+    // Ensure claimed work is within limits.
+    if (target < 1 || target > pow_limit)
+        return false;
+
+    // Conditionally use scrypt proof of work (e.g. Litecoin).
+    // Ensure actual work is at least claimed amount (smaller is more work).
+    return to_uint256(scrypt ? scrypt_hash(to_data()) : hash()) <= target;
+}
+
+// static
+uint256_t header::proof(uint32_t bits)
+{
+    const auto header_bits = compact(bits);
+
+    if (header_bits.is_overflowed())
+        return 0;
+
+    uint256_t target(header_bits);
+
+    //*************************************************************************
+    // CONSENSUS: satoshi will throw division by zero in the case where the
+    // target is (2^256)-1 as the overflow will result in a zero divisor.
+    // While actually achieving this work is improbable, this method operates
+    // on user data method and therefore must be guarded.
+    //*************************************************************************
+    const auto divisor = target + 1;
+
+    // We need to compute 2**256 / (target + 1), but we can't represent 2**256
+    // as it's too large for uint256. However as 2**256 is at least as large as
+    // target + 1, it is equal to ((2**256 - target - 1) / (target + 1)) + 1, or
+    // (~target / (target + 1)) + 1.
+    return (divisor == 0) ? 0 : (~target / divisor) + 1;
+}
+
+uint256_t header::proof() const
+{
+    return proof(bits_);
+}
+
 
 // Validation.
-// ----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 
 code header::check(uint32_t timestamp_limit_seconds,
-    uint32_t proof_of_work_limit, bool scrypt) const NOEXCEPT
+    uint32_t proof_of_work_limit, bool scrypt) const
 {
-    if (is_invalid_proof_of_work(proof_of_work_limit, scrypt))
+
+    if (!is_valid_proof_of_work(proof_of_work_limit, scrypt))
         return error::invalid_proof_of_work;
-    if (is_invalid_timestamp(timestamp_limit_seconds))
+
+    else if (!is_valid_timestamp(timestamp_limit_seconds))
         return error::futuristic_timestamp;
 
-    return error::success;
+    else
+        return error::success;
 }
 
-// Checkpoints and previous_block_hash are chain validation (not here).
-// bits_ below is the consensus direct comparison of the header.bits value.
-// All other work comparisons performed on expanded/normalized bits values.
-code header::accept(const context& ctx) const NOEXCEPT
+code header::accept() const
 {
-    if (version_ < ctx.minimum_block_version)
-        return error::invalid_block_version;
-    if (timestamp_ <= ctx.median_time_past)
-        return error::timestamp_too_early;
-    if (bits_ != ctx.work_required)
+    const auto state = metadata.state;
+    return state ? accept(*state) : error::operation_failed;
+}
+
+code header::accept(const chain_state& state) const
+{
+    if (bits_ != state.work_required())
         return error::incorrect_proof_of_work;
 
-    return error::success;
+    else if (state.is_checkpoint_conflict(hash()))
+        return error::checkpoints_failed;
+
+    else if (state.is_under_checkpoint())
+        return error::success;
+
+    else if (version_ < state.minimum_block_version())
+        return error::invalid_block_version;
+
+    else if (timestamp_ <= state.median_time_past())
+        return error::timestamp_too_early;
+
+    else
+        return error::success;
 }
-
-// JSON value convertors.
-// ----------------------------------------------------------------------------
-
-namespace json = boost::json;
-
-// boost/json will soon have NOEXCEPT: github.com/boostorg/json/pull/636
-BC_PUSH_WARNING(NO_THROW_IN_NOEXCEPT)
-
-header tag_invoke(json::value_to_tag<header>,
-    const json::value& value) NOEXCEPT
-{
-    hash_digest previous, merkle_root;
-    if (!decode_hash(previous, value.at("previous").get_string().c_str()) ||
-        !decode_hash(merkle_root, value.at("merkle_root").get_string().c_str()))
-        return {};
-
-    return
-    {
-        value.at("version").to_number<uint32_t>(),
-        previous,
-        merkle_root,
-        value.at("timestamp").to_number<uint32_t>(),
-        value.at("bits").to_number<uint32_t>(),
-        value.at("nonce").to_number<uint32_t>()
-    };
-}
-
-void tag_invoke(json::value_from_tag, json::value& value,
-    const header& tx) NOEXCEPT
-{
-    value =
-    {
-        { "version", tx.version() },
-        { "previous", encode_hash(tx.previous_block_hash()) },
-        { "merkle_root", encode_hash(tx.merkle_root()) },
-        { "timestamp", tx.timestamp() },
-        { "bits", tx.bits() },
-        { "nonce", tx.nonce() }
-    };
-}
-
-BC_POP_WARNING()
-
-header::cptr tag_invoke(json::value_to_tag<header::cptr>,
-    const json::value& value) NOEXCEPT
-{
-    return to_shared(tag_invoke(json::value_to_tag<header>{}, value));
-}
-
-// Shared pointer overload is required for navigation.
-BC_PUSH_WARNING(SMART_PTR_NOT_NEEDED)
-BC_PUSH_WARNING(NO_VALUE_OR_CONST_REF_SHARED_PTR)
-
-void tag_invoke(json::value_from_tag tag, json::value& value,
-    const header::cptr& tx) NOEXCEPT
-{
-    tag_invoke(tag, value, *tx);
-}
-
-BC_POP_WARNING()
-BC_POP_WARNING()
 
 } // namespace chain
 } // namespace system
